@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "kragen-memory": {
+      "command": "python",
+      "args": ["mcp_servers/memory_mcp/main.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "MEMORY_MCP_DATABASE_URL": "postgresql://kragen:CHANGE_ME@127.0.0.1:5432/kragen",
+        "MEMORY_MCP_WORKSPACE_ID": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "kragen-workspace": {
+      "command": "python",
+      "args": ["mcp_servers/workspace_mcp/main.py"],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "WORKSPACE_ROOT": "${workspaceFolder}"
+      }
+    },
+    "kragen-db": {
+      "command": "python",
+      "args": ["mcp_servers/db_mcp/main.py"],
+      "cwd": "${workspaceFolder}"
+    },
+    "kragen-secrets": {
+      "command": "python",
+      "args": ["mcp_servers/secrets_mcp/main.py"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}

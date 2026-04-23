@@ -1,0 +1,82 @@
+# Kragen — application configuration (single source of truth).
+# Override any key via environment: KRAGEN_<SECTION>__<KEY> (nested sections use __).
+# Example: KRAGEN_DATABASE__URL=postgresql+asyncpg://user:pass@127.0.0.1:5432/kragen
+#
+# Path to this file: set KRAGEN_CONFIG_FILE=/absolute/path/to/kragen.yaml (optional).
+
+app:
+  name: kragen
+  environment: local
+  log_level: INFO
+
+api:
+  host: 0.0.0.0
+  port: 8000
+
+database:
+  # Replace with your PostgreSQL 18 + pgvector connection string.
+  url: postgresql+asyncpg://kragen:CHANGE_ME@127.0.0.1:5432/kragen
+
+storage:
+  endpoint_url: http://127.0.0.1:9000
+  access_key: minioadmin
+  secret_key: minioadmin
+  bucket: kragen-artifacts
+
+auth:
+  jwt_secret: change-me-in-production
+  jwt_algorithm: HS256
+  disabled: false
+  dev_user_id: null
+
+http:
+  cors_allow_origins:
+    - "*"
+
+worker:
+  cursor_cli_path: cursor
+  workspace_root: ~/.kragen/workspaces
+  timeout_seconds: 180
+  retries: 1
+  memory_context_enabled: true
+  memory_top_k: 4
+
+channels:
+  openclaw_enabled: false
+
+plugins:
+  # Discover plugins exposed via the `kragen.plugins` entry-point group.
+  autoload_entry_points: true
+  # Allow-list: only plugins listed here are activated at boot. Everything else
+  # stays discovered but disabled. Toggle at runtime via /admin/plugins/{id}/enable.
+  enabled:
+    # Example built-in skill: short, actionable replies.
+    - id: kragen-skill-concise
+      config: {}
+
+telegram_channel:
+  # Test profile for kragen-telegram-channel. Keep production secrets in env.
+  bot_token: "1234567890:TEST_BOT_TOKEN_REPLACE_ME"
+  api_base_url: "http://127.0.0.1:8000"
+  auth_user_id: "00000000-0000-0000-0000-000000000001"
+  default_workspace_id: "00000000-0000-0000-0000-000000000001"
+
+  # Mode: polling | webhook
+  mode: "polling"
+
+  # Polling mode tuning
+  poll_timeout_seconds: 20
+  loop_delay_seconds: 0.4
+  task_poll_interval_seconds: 1.0
+  task_wait_timeout_seconds: 300
+
+  # Dedup retention/cleanup
+  dedup_retention_hours: 168
+  dedup_cleanup_interval_seconds: 3600
+
+  # Webhook mode settings (used when mode=webhook)
+  webhook_public_url: "https://bot.example.com"
+  webhook_path: "/telegram/webhook"
+  webhook_host: "0.0.0.0"
+  webhook_port: 8081
+  webhook_secret_token: "TEST_WEBHOOK_SECRET_REPLACE_ME"

@@ -1,0 +1,11 @@
+---
+description: Project documentation and code comment language
+alwaysApply: true
+---
+
+# Language
+
+- All **documentation** in this repository (Markdown, README, docstrings intended as public API docs) must be written in **English**.
+- All **comments** in source code must be written in **English**.
+
+User-facing chat responses may follow the user's preferred locale when different.

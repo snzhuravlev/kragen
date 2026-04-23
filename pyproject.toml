@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kragen"
+version = "0.1.0"
+description = "Multi-channel agent platform with a Cursor-backed execution runtime (MVP)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "sqlalchemy[asyncio]>=2.0.35",
+  "asyncpg>=0.29.0",
+  "psycopg[binary]>=3.2.0",
+  "alembic>=1.13.3",
+  "pydantic>=2.9.0",
+  "pydantic-settings>=2.5.0",
+  "httpx>=0.27.0",
+  "python-multipart>=0.0.9",
+  "structlog>=24.4.0",
+  "pyyaml>=6.0.0",
+  "pgvector>=0.3.6",
+  "aioboto3>=13.0.0",
+  "mcp>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.24.0",
+  "ruff>=0.6.0",
+  "httpx>=0.27.0",
+  "mypy>=1.11.0",
+  "types-PyYAML>=6.0.0",
+]
+
+[project.scripts]
+kragen-api = "kragen.api.main:run"
+agentctl = "kragen.cli.agentctl:main"
+kragen-telegram-channel = "kragen.channels.telegram_adapter:main"
+kragen-service = "kragen.cli.service_runner:main"
+
+# Built-in plugins exposed through the same entry-point group that third-party
+# plugins use. External packages register themselves with their own pyproject
+# entries under [project.entry-points."kragen.plugins"].
+[project.entry-points."kragen.plugins"]
+kragen-skill-concise = "kragen.plugins.builtin.concise_skill:plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+explicit_package_bases = true
+mypy_path = "src"
+files = ["src/kragen"]
+warn_unused_ignores = true
+warn_return_any = true
+warn_redundant_casts = true
+strict_optional = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "kragen.logging_config"
+disable_error_code = ["no-any-return"]
+
+# ORM rows vs Pydantic response models in list() — acceptable at API boundary.
+[[tool.mypy.overrides]]
+module = [
+    "kragen.api.routes.admin",
+    "kragen.api.routes.sessions",
+    "kragen.api.routes.workspaces",
+]
+disable_error_code = ["arg-type"]

@@ -1,0 +1,1578 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Kragen Web Channel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #f5f1e8;
+        --surface: #fffdf8;
+        --surface-soft: #f1ebdf;
+        --border: #d8cdb8;
+        --text: #2a2a2a;
+        --muted: #706a60;
+        --accent: #7d5f3b;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        height: 100vh;
+        max-height: 100vh;
+        overflow: hidden;
+        font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+      .app-shell {
+        display: grid;
+        grid-template-columns: 250px 1fr;
+        grid-template-rows: 1fr;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .sidebar {
+        background: var(--surface-soft);
+        border-right: 1px solid var(--border);
+        padding: 1rem 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      .sidebar-spacer {
+        flex: 1;
+        min-height: 0.5rem;
+      }
+      .brand {
+        padding: 0.35rem 0.55rem;
+      }
+      .brand h1 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 700;
+      }
+      .brand p {
+        margin: 0.25rem 0 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+      .menu-group {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+        padding: 0.55rem;
+        display: grid;
+        gap: 0.45rem;
+      }
+      .menu-title {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        margin-bottom: 0.1rem;
+      }
+      button {
+        width: 100%;
+        border: 1px solid var(--border);
+        background: #efe5d4;
+        color: var(--text);
+        border-radius: 8px;
+        padding: 0.52rem 0.6rem;
+        cursor: pointer;
+        text-align: left;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      .main {
+        padding: 1rem;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 0.8rem;
+      }
+      .panel {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 12px;
+        padding: 0.8rem;
+      }
+      .top-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+      }
+      .row {
+        display: grid;
+        gap: 0.45rem;
+      }
+      label {
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--border);
+        background: #fff;
+        border-radius: 8px;
+        padding: 0.55rem 0.6rem;
+        color: var(--text);
+      }
+      textarea {
+        min-height: 84px;
+      }
+      .workspace-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+      }
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.8rem;
+        min-height: 0;
+      }
+      .output-box {
+        border: 1px solid var(--border);
+        background: #fff;
+        border-radius: 10px;
+        padding: 0.7rem;
+        min-height: 120px;
+        white-space: pre-wrap;
+        overflow: auto;
+      }
+      .output-box.tall {
+        min-height: 300px;
+      }
+      /* Message list: fills remaining chat height; scroll inside */
+      #tab-chat > .chat-messages-section {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #tab-chat > .chat-section-fixed {
+        flex-shrink: 0;
+      }
+      #messages.messages-feed {
+        flex: 1;
+        min-height: 0;
+        max-height: none;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scroll-behavior: smooth;
+      }
+      .messages-feed {
+        white-space: normal;
+      }
+      .messages-feed .msg-block {
+        margin-bottom: 0.9rem;
+        padding: 0.55rem 0.65rem;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #faf8f4;
+      }
+      .messages-feed .msg-block.msg-user {
+        border-left: 4px solid #5b7a9e;
+      }
+      .messages-feed .msg-block.msg-assistant {
+        border-left: 4px solid var(--accent);
+      }
+      .messages-feed .msg-block.msg-system {
+        border-left: 4px solid #6b6b6b;
+      }
+      .messages-feed .msg-role {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+      }
+      .messages-feed .msg-body {
+        font-size: 0.92rem;
+        line-height: 1.45;
+      }
+      .messages-feed .msg-body :first-child {
+        margin-top: 0;
+      }
+      .messages-feed .msg-body :last-child {
+        margin-bottom: 0;
+      }
+      .messages-feed .msg-body pre {
+        background: #f0ebe3;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem;
+        overflow-x: auto;
+        font-size: 0.82rem;
+      }
+      .messages-feed .msg-body code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.86em;
+        background: #efe8dc;
+        padding: 0.1rem 0.25rem;
+        border-radius: 4px;
+      }
+      .messages-feed .msg-body pre code {
+        background: transparent;
+        padding: 0;
+      }
+      .messages-feed .msg-body h1,
+      .messages-feed .msg-body h2,
+      .messages-feed .msg-body h3 {
+        margin: 0.65em 0 0.35em;
+        font-weight: 650;
+        line-height: 1.25;
+      }
+      .messages-feed .msg-body h1 {
+        font-size: 1.25rem;
+      }
+      .messages-feed .msg-body h2 {
+        font-size: 1.12rem;
+      }
+      .messages-feed .msg-body h3 {
+        font-size: 1.04rem;
+      }
+      .messages-feed .msg-body ul,
+      .messages-feed .msg-body ol {
+        margin: 0.4em 0;
+        padding-left: 1.35rem;
+      }
+      .messages-feed .msg-body blockquote {
+        margin: 0.45em 0;
+        padding-left: 0.75rem;
+        border-left: 3px solid var(--border);
+        color: #444;
+      }
+      #stream .msg-body {
+        white-space: normal;
+      }
+      /* Live stream panel: scroll inside, same idea as Messages */
+      #stream.stream-panel {
+        max-height: min(52vh, 560px);
+        min-height: 160px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        scroll-behavior: smooth;
+      }
+      .worker-config-grid {
+        display: grid;
+        grid-template-columns: minmax(9rem, 12rem) 1fr;
+        gap: 0.45rem 0.65rem;
+        align-items: center;
+      }
+      .worker-config-grid > label {
+        margin: 0;
+      }
+      .worker-cb-label {
+        font-size: 0.8rem;
+        color: var(--text);
+      }
+      .worker-cb-wrap {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        font-size: 0.82rem;
+        font-weight: 400;
+        margin: 0;
+        cursor: pointer;
+      }
+      .worker-cb-wrap input {
+        width: auto;
+        margin-top: 0.2rem;
+      }
+      .output-box.short-hint {
+        min-height: 2.5rem;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+      }
+      .kragen-yaml-meta {
+        font-size: 0.76rem;
+        color: var(--muted);
+        margin-bottom: 0.35rem;
+        word-break: break-all;
+      }
+      .kragen-yaml-pre {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        white-space: pre;
+        overflow: auto;
+        max-height: min(55vh, 520px);
+        padding: 0.65rem;
+        background: #faf8f4;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .diagnostics-log-pre {
+        max-height: min(58vh, 680px);
+        font-size: 0.72rem;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .diag-logs-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.45rem 0.65rem;
+      }
+      .diag-logs-toolbar label {
+        margin: 0;
+      }
+      .diag-logs-toolbar select {
+        width: auto;
+        min-width: 5rem;
+        max-width: 8rem;
+      }
+      .composer {
+        display: grid;
+        gap: 0.6rem;
+      }
+      .composer-actions {
+        display: flex;
+        gap: 0.55rem;
+      }
+      .composer-actions button {
+        text-align: center;
+      }
+      .hint {
+        font-size: 0.78rem;
+        color: var(--muted);
+      }
+      /* Primary navigation: one active item + tab panels */
+      .sidebar-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+      }
+      .nav-item {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        border-radius: 8px;
+        padding: 0.55rem 0.65rem;
+        cursor: pointer;
+        text-align: left;
+        font-size: 0.88rem;
+        position: relative;
+      }
+      .nav-item:hover {
+        border-color: var(--accent);
+      }
+      .nav-item.active {
+        background: #e8dcc8;
+        border-color: var(--accent);
+        box-shadow: inset 3px 0 0 var(--accent);
+        font-weight: 600;
+      }
+      /* Prominent Configuration entry (bottom of sidebar) */
+      .sidebar-config-wrap {
+        margin-top: 0.25rem;
+        padding: 0.5rem;
+        border-radius: 14px;
+        background: linear-gradient(145deg, #ebe3d4 0%, #e0d4c2 100%);
+        border: 1px solid #c4b49a;
+        box-shadow: 0 2px 8px rgba(45, 35, 20, 0.12);
+      }
+      .nav-item--config {
+        font-size: 0.95rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        padding: 0.72rem 0.85rem;
+        border-width: 2px;
+        border-color: #a68b5b;
+        background: linear-gradient(180deg, #f5edd8 0%, #e8dcc4 100%);
+        color: #3d2e1a;
+        box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+      }
+      .nav-item--config:hover {
+        border-color: #8b6f3d;
+        background: linear-gradient(180deg, #faf4e4 0%, #efe3cc 100%);
+      }
+      .nav-item--config.active {
+        background: linear-gradient(180deg, #d4c4a8 0%, #c9b896 100%);
+        border-color: #7d5f3b;
+        box-shadow: inset 4px 0 0 #7d5f3b, 0 1px 0 rgba(255, 255, 255, 0.35) inset;
+        color: #2a1f10;
+      }
+      .config-nav-hint {
+        font-size: 0.68rem;
+        color: var(--muted);
+        text-align: center;
+        margin: 0.35rem 0 0;
+        line-height: 1.3;
+      }
+      .main-area {
+        display: flex;
+        flex-direction: column;
+        gap: 0.8rem;
+        min-height: 0;
+        flex: 1;
+      }
+      .tab-panel {
+        display: none;
+        flex-direction: column;
+        gap: 0.8rem;
+        min-height: 0;
+        flex: 1;
+      }
+      .tab-panel.active {
+        display: flex;
+      }
+      #tab-chat.tab-panel.active {
+        min-height: 0;
+        overflow: hidden;
+      }
+      /* Other tabs: scroll inside main when content is taller than viewport */
+      #tab-diagnostics.tab-panel.active,
+      #tab-config.tab-panel.active {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .field-help {
+        margin: 0 0 0.35rem;
+        font-size: 0.76rem;
+        color: var(--muted);
+        line-height: 1.35;
+      }
+      .config-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+      .config-actions button {
+        width: auto;
+        min-width: 140px;
+        text-align: center;
+      }
+      #configVerifyResult {
+        min-height: 72px;
+      }
+      @media (max-width: 980px) {
+        body {
+          height: auto;
+          max-height: none;
+          overflow: auto;
+        }
+        .app-shell {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto;
+          height: auto;
+          min-height: 100vh;
+          overflow: visible;
+        }
+        .sidebar {
+          border-right: none;
+          border-bottom: 1px solid var(--border);
+        }
+        #tab-chat > .chat-messages-section {
+          flex: none;
+          min-height: 280px;
+        }
+        #messages.messages-feed {
+          max-height: min(52vh, 560px);
+        }
+        .top-grid,
+        .workspace-grid,
+        .split {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>Kragen Web Console</h1>
+          <p>Left menu + right output layout</p>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="Main views" role="tablist">
+          <button
+            type="button"
+            class="nav-item active"
+            id="navChat"
+            data-tab="chat"
+            role="tab"
+            aria-selected="true"
+            aria-controls="tab-chat"
+          >
+            Chat
+          </button>
+          <button
+            type="button"
+            class="nav-item"
+            id="navDiagnostics"
+            data-tab="diagnostics"
+            role="tab"
+            aria-selected="false"
+            aria-controls="tab-diagnostics"
+          >
+            Diagnostics
+          </button>
+        </nav>
+
+        <div class="menu-group">
+          <div class="menu-title">Session</div>
+          <button id="refresh" type="button">Refresh</button>
+          <button id="newSession" type="button">New Session</button>
+          <button id="newCleanSession" type="button">New Clean Session</button>
+          <button id="reloadMessages" type="button">Reload History</button>
+          <button id="clearPanels" type="button">Clear Output</button>
+        </div>
+
+        <div class="menu-group">
+          <div class="menu-title">Cursor Auth</div>
+          <button id="checkCursorAuth" type="button">Check Auth Status</button>
+          <button id="startCursorLogin" type="button">Start Login Flow</button>
+        </div>
+
+        <div class="hint">
+          API override: <code>?api=http://localhost:8000</code><br />
+          Token override: <code>?token=&lt;uuid&gt;</code>
+        </div>
+
+        <div class="sidebar-spacer" aria-hidden="true"></div>
+
+        <div class="sidebar-config-wrap">
+          <nav class="sidebar-nav" aria-label="Configuration" role="tablist">
+            <button
+              type="button"
+              class="nav-item nav-item--config"
+              id="navConfig"
+              data-tab="config"
+              role="tab"
+              aria-selected="false"
+              aria-controls="tab-config"
+            >
+              Configuration
+            </button>
+          </nav>
+          <p class="config-nav-hint">API, token, health check, kragen.yaml</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="main-area">
+          <!-- Chat: workspace, composer (above messages), markdown message list -->
+          <div id="tab-chat" class="tab-panel active" role="tabpanel" aria-labelledby="navChat">
+            <section class="panel workspace-grid chat-section-fixed">
+              <div class="row">
+                <label for="workspace">Workspace</label>
+                <select id="workspace"></select>
+              </div>
+              <div class="row">
+                <label for="session">Session</label>
+                <select id="session"></select>
+              </div>
+            </section>
+
+            <section class="panel composer chat-section-fixed">
+              <label for="message">Message</label>
+              <textarea id="message" placeholder="Type your request to Cursor..."></textarea>
+              <div class="composer-actions">
+                <button id="send" type="button">Send Message</button>
+              </div>
+            </section>
+
+            <section class="panel row chat-section-fixed">
+              <label for="stream">Live stream</label>
+              <p class="field-help">
+                Real-time output from the task worker (SSE). Lines prefixed with
+                <code>[kragen]</code> are gateway progress (load history, memory, spawn CLI, finish). The
+                Cursor agent&apos;s own stdout/stderr follow; then the stream ends when the task is
+                fully saved. Shown as Markdown while the run is in progress. By default the browser
+                does not abort the stream (long tasks are OK). Optional:
+                <code>?streamTimeoutMs=180000</code> to cap the wait (milliseconds).
+              </p>
+              <div
+                id="stream"
+                class="output-box tall messages-feed stream-panel"
+                aria-live="polite"
+                aria-relevant="additions"
+              ></div>
+            </section>
+
+            <section class="panel row chat-messages-section">
+              <label>Messages</label>
+              <div id="messages" class="output-box messages-feed"></div>
+            </section>
+          </div>
+
+          <!-- Diagnostics: Cursor auth, task state, status -->
+          <div
+            id="tab-diagnostics"
+            class="tab-panel"
+            role="tabpanel"
+            aria-labelledby="navDiagnostics"
+          >
+            <section class="panel">
+              <p class="field-help" style="margin-top: 0">
+                Runtime status from the API and Cursor CLI. Use the sidebar buttons under
+                <strong>Cursor Auth</strong> to refresh login or start the browser flow.
+              </p>
+              <div class="split">
+                <div class="row">
+                  <label>Cursor Authentication</label>
+                  <div id="cursorAuth" class="output-box"></div>
+                </div>
+                <div class="row">
+                  <label>Task State</label>
+                  <div id="taskState" class="output-box"></div>
+                </div>
+              </div>
+              <div class="row" style="margin-top: 0.65rem">
+                <label>Status</label>
+                <div id="status" class="output-box"></div>
+              </div>
+
+              <div class="row" style="margin-top: 0.85rem">
+                <label>Long-term memory (PostgreSQL)</label>
+                <p class="field-help">
+                  The Kragen API process runs the memory query against your database. A Cursor IDE
+                  agent cannot reach your PostgreSQL from its sandbox — use this check instead of
+                  asking the agent to &quot;verify the DB&quot;.
+                </p>
+                <div class="diag-logs-toolbar">
+                  <button type="button" id="diagMemoryCheck">Check long-term memory (DB)</button>
+                </div>
+                <pre
+                  id="diagMemoryStatus"
+                  class="kragen-yaml-pre diagnostics-log-pre"
+                  aria-label="Long-term memory DB status"
+                ></pre>
+              </div>
+
+              <div class="row" style="margin-top: 0.85rem">
+                <label>Server logs</label>
+                <p class="field-help">
+                  Structured JSON lines from this API process (in-memory ring buffer). Each worker
+                  process has its own buffer. For full history use the process stdout or a log shipper.
+                </p>
+                <div class="diag-logs-toolbar">
+                  <label for="diagLogsLimit">Lines</label>
+                  <select id="diagLogsLimit" aria-label="Log line limit">
+                    <option value="400">400</option>
+                    <option value="800" selected>800</option>
+                    <option value="1500">1500</option>
+                    <option value="3000">3000</option>
+                    <option value="5000">5000</option>
+                  </select>
+                  <button type="button" id="diagLogsRefresh">Refresh</button>
+                  <button type="button" id="diagLogsClear">Clear buffer</button>
+                  <label class="worker-cb-wrap" style="margin: 0">
+                    <input type="checkbox" id="diagLogsAuto" />
+                    <span>Auto-refresh every 4s</span>
+                  </label>
+                </div>
+                <div id="diagLogsMeta" class="kragen-yaml-meta"></div>
+                <pre
+                  id="diagLogsBody"
+                  class="kragen-yaml-pre diagnostics-log-pre"
+                  aria-label="Server structured logs"
+                ></pre>
+              </div>
+            </section>
+          </div>
+
+          <!-- Configuration: API URL, token, verify against /health -->
+          <div id="tab-config" class="tab-panel" role="tabpanel" aria-labelledby="navConfig">
+            <section class="panel">
+              <div class="row">
+                <label for="api">API base URL</label>
+                <p class="field-help">
+                  Base URL of the Kragen HTTP API (no trailing slash). Example:
+                  <code>http://localhost:8000</code>. You can also set
+                  <code>?api=...</code> in the page URL for bookmarks.
+                </p>
+                <input id="api" type="url" autocomplete="url" placeholder="http://localhost:8000" />
+              </div>
+              <div class="row" style="margin-top: 0.75rem">
+                <label for="token">Bearer token (MVP)</label>
+                <p class="field-help">
+                  For local development the API accepts a raw user UUID as the Bearer token (see
+                  <code>scripts/seed_data.py</code>). Override with <code>?token=&lt;uuid&gt;</code>
+                  if needed. Production should use a real JWT.
+                </p>
+                <input id="token" type="text" autocomplete="off" spellcheck="false" />
+              </div>
+              <div class="config-actions" style="margin-top: 0.75rem">
+                <button type="button" id="verifyConfig">Verify connection</button>
+              </div>
+              <div class="row" style="margin-top: 0.65rem">
+                <label for="configVerifyResult">Verification result</label>
+                <p class="field-help">
+                  Calls <code>GET /health</code> on the API above. Expect JSON
+                  <code>{"status":"ok"}</code> when the gateway is reachable and healthy.
+                </p>
+                <div id="configVerifyResult" class="output-box"></div>
+              </div>
+
+              <div class="row" style="margin-top: 1rem">
+                <label>Worker (Cursor agent)</label>
+                <p class="field-help">
+                  Values are stored in the <code>worker:</code> section of <code>kragen.yaml</code> on the
+                  server. Environment variables such as
+                  <code>KRAGEN_WORKER__TIMEOUT_SECONDS</code> still override the file when the API starts.
+                  These options affect the Kragen worker only — not Cursor IDE&apos;s own terminal or tool
+                  policies.
+                </p>
+                <div class="worker-config-grid">
+                  <label for="wkCursorCli">cursor_cli_path</label>
+                  <input id="wkCursorCli" type="text" spellcheck="false" autocomplete="off" />
+                  <label for="wkWorkspaceRoot">workspace_root</label>
+                  <input id="wkWorkspaceRoot" type="text" spellcheck="false" autocomplete="off" />
+                  <label for="wkTimeout">timeout_seconds</label>
+                  <input id="wkTimeout" type="number" min="15" step="1" />
+                  <label for="wkRetries">retries</label>
+                  <input id="wkRetries" type="number" min="0" step="1" />
+                  <label for="wkMemoryTopK">memory_top_k</label>
+                  <input id="wkMemoryTopK" type="number" min="1" max="32" step="1" />
+                  <span class="worker-cb-label">memory_context_enabled</span>
+                  <label class="worker-cb-wrap">
+                    <input id="wkMemoryEnabled" type="checkbox" />
+                    <span>Inject long-term memory into the agent prompt</span>
+                  </label>
+                </div>
+                <div class="config-actions" style="margin-top: 0.55rem">
+                  <button type="button" id="loadWorkerConfig">Reload worker settings</button>
+                  <button type="button" id="saveWorkerConfig">Save worker settings</button>
+                </div>
+                <div id="workerConfigResult" class="output-box short-hint" aria-live="polite"></div>
+              </div>
+
+              <div class="row" style="margin-top: 1rem">
+                <label>kragen.yaml (server file)</label>
+                <p class="field-help">
+                  Full contents of the YAML file used by the API process (same resolution as
+                  <code>KRAGEN_CONFIG_FILE</code> or <code>configs/kragen.yaml</code>). Requires a valid Bearer token.
+                </p>
+                <div class="config-actions">
+                  <button type="button" id="reloadKragenYaml">Reload kragen.yaml</button>
+                </div>
+                <div id="kragenYamlPath" class="kragen-yaml-meta"></div>
+                <pre id="kragenYamlContent" class="kragen-yaml-pre" aria-label="kragen.yaml contents"></pre>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script src="/ui/vendor/marked.min.js"></script>
+    <script src="/ui/vendor/purify.min.js"></script>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const defaultApi =
+        (params.get("api") || "http://localhost:8000").replace(/\/$/, "") ||
+        window.location.origin;
+      const defaultToken =
+        params.get("token") || "00000000-0000-0000-0000-000000000001";
+
+      const apiInput = document.getElementById("api");
+      const tokenInput = document.getElementById("token");
+      const workspaceSelect = document.getElementById("workspace");
+      const sessionSelect = document.getElementById("session");
+      const messageInput = document.getElementById("message");
+      const statusEl = document.getElementById("status");
+      const streamEl = document.getElementById("stream");
+      const messagesEl = document.getElementById("messages");
+      const cursorAuthEl = document.getElementById("cursorAuth");
+      const taskStateEl = document.getElementById("taskState");
+      const configVerifyResultEl = document.getElementById("configVerifyResult");
+      const tabChatEl = document.getElementById("tab-chat");
+      const tabDiagnosticsEl = document.getElementById("tab-diagnostics");
+      const tabConfigEl = document.getElementById("tab-config");
+      const navChatEl = document.getElementById("navChat");
+      const navDiagnosticsEl = document.getElementById("navDiagnostics");
+      const navConfigEl = document.getElementById("navConfig");
+      /**
+       * Optional client-side cap on how long to read the SSE stream (ms).
+       * 0 = wait until the server closes the stream (recommended for Cursor agent runs).
+       * Previously 180000 caused AbortError on tasks longer than 3 minutes.
+       */
+      const STREAM_TIMEOUT_MS = (() => {
+        const raw = params.get("streamTimeoutMs");
+        if (raw === null || raw === "") return 0;
+        const n = parseInt(raw, 10);
+        return Number.isFinite(n) && n >= 0 ? n : 0;
+      })();
+      let taskPollTimer = null;
+      let diagLogsPollTimer = null;
+
+      apiInput.value = defaultApi;
+      tokenInput.value = defaultToken;
+
+      /**
+       * Switch main content: Chat | Diagnostics | Configuration.
+       * Updates sidebar nav active state (visual + aria-selected).
+       */
+      function showTab(name) {
+        const isChat = name === "chat";
+        const isDiagnostics = name === "diagnostics";
+        const isConfig = name === "config";
+        tabChatEl.classList.toggle("active", isChat);
+        tabDiagnosticsEl.classList.toggle("active", isDiagnostics);
+        tabConfigEl.classList.toggle("active", isConfig);
+        navChatEl.classList.toggle("active", isChat);
+        navDiagnosticsEl.classList.toggle("active", isDiagnostics);
+        navConfigEl.classList.toggle("active", isConfig);
+        navChatEl.setAttribute("aria-selected", isChat ? "true" : "false");
+        navDiagnosticsEl.setAttribute("aria-selected", isDiagnostics ? "true" : "false");
+        navConfigEl.setAttribute("aria-selected", isConfig ? "true" : "false");
+        if (isConfig) {
+          loadKragenYaml().catch(() => {});
+          loadWorkerConfig().catch(() => {});
+        }
+        if (isDiagnostics) {
+          loadDiagnosticsLogs().catch(() => {});
+          syncDiagLogsAuto();
+          const memPre = document.getElementById("diagMemoryStatus");
+          if (memPre && !memPre.textContent.trim()) {
+            memPre.textContent = 'Click "Check long-term memory (DB)" to query the API.';
+          }
+        } else {
+          stopDiagLogsPolling();
+        }
+      }
+
+      function stopDiagLogsPolling() {
+        if (diagLogsPollTimer) {
+          clearInterval(diagLogsPollTimer);
+          diagLogsPollTimer = null;
+        }
+      }
+
+      function syncDiagLogsAuto() {
+        stopDiagLogsPolling();
+        const cb = document.getElementById("diagLogsAuto");
+        if (cb && cb.checked) {
+          diagLogsPollTimer = setInterval(() => {
+            loadDiagnosticsLogs().catch(() => {});
+          }, 4000);
+        }
+      }
+
+      async function loadDiagnosticsLogs() {
+        const meta = document.getElementById("diagLogsMeta");
+        const body = document.getElementById("diagLogsBody");
+        const lim = document.getElementById("diagLogsLimit");
+        if (!body) return;
+        const limit = lim ? parseInt(lim.value, 10) || 800 : 800;
+        body.textContent = "Loading…";
+        try {
+          const data = await fetchJson(
+            `/admin/logs?limit=${encodeURIComponent(limit)}`,
+            { headers: authHeaders(false) },
+            1
+          );
+          if (meta) {
+            meta.textContent =
+              "Showing " +
+              data.lines_returned +
+              " lines (buffer " +
+              data.buffered_in_memory +
+              " / " +
+              data.buffer_capacity +
+              " max)";
+          }
+          body.textContent = (data.lines || []).join("\n");
+          requestAnimationFrame(() => {
+            body.scrollTop = body.scrollHeight;
+          });
+        } catch (err) {
+          body.textContent = String(err);
+          if (meta) meta.textContent = "";
+        }
+      }
+
+      async function clearDiagnosticsLogBuffer() {
+        await fetchJson("/admin/logs/clear", {
+          method: "POST",
+          headers: authHeaders(true),
+          body: "{}",
+        });
+        await loadDiagnosticsLogs();
+      }
+
+      async function loadLongTermMemoryStatus() {
+        const body = document.getElementById("diagMemoryStatus");
+        if (!body) return;
+        body.textContent = "Loading…";
+        try {
+          const data = await fetchJson("/admin/memory/status", {
+            headers: authHeaders(false),
+          });
+          body.textContent = JSON.stringify(data, null, 2);
+        } catch (err) {
+          body.textContent = String(err);
+        }
+        requestAnimationFrame(() => {
+          body.scrollTop = body.scrollHeight;
+        });
+      }
+
+      /**
+       * Render Markdown to safe HTML (marked + DOMPurify). Falls back to plain text if libs missing.
+       */
+      function renderMarkdownSafe(text) {
+        const src = text ?? "";
+        if (typeof marked !== "undefined" && typeof DOMPurify !== "undefined") {
+          const html = marked.parse(src, { breaks: true });
+          return DOMPurify.sanitize(html);
+        }
+        const div = document.createElement("div");
+        div.textContent = src;
+        return div.innerHTML;
+      }
+
+      /** Update the live stream panel with Markdown-rendered text and scroll to latest output. */
+      function setStreamMarkdown(text) {
+        streamEl.innerHTML = '<div class="msg-body">' + renderMarkdownSafe(text) + "</div>";
+        requestAnimationFrame(() => {
+          streamEl.scrollTop = streamEl.scrollHeight;
+        });
+      }
+
+      async function loadKragenYaml() {
+        const pathEl = document.getElementById("kragenYamlPath");
+        const contentEl = document.getElementById("kragenYamlContent");
+        if (!contentEl) return;
+        contentEl.textContent = "Loading...";
+        if (pathEl) pathEl.textContent = "";
+        try {
+          const data = await fetchJson("/admin/config/kragen-yaml", {
+            headers: authHeaders(false),
+          });
+          if (pathEl) pathEl.textContent = "Path: " + data.path;
+          contentEl.textContent = data.content;
+        } catch (err) {
+          contentEl.textContent = String(err);
+        }
+      }
+
+      function _setWorkerForm(w) {
+        document.getElementById("wkCursorCli").value = w.cursor_cli_path ?? "";
+        document.getElementById("wkWorkspaceRoot").value = w.workspace_root ?? "";
+        document.getElementById("wkTimeout").value = String(w.timeout_seconds ?? 180);
+        document.getElementById("wkRetries").value = String(w.retries ?? 1);
+        document.getElementById("wkMemoryTopK").value = String(w.memory_top_k ?? 4);
+        document.getElementById("wkMemoryEnabled").checked = !!w.memory_context_enabled;
+      }
+
+      async function loadWorkerConfig() {
+        const out = document.getElementById("workerConfigResult");
+        if (!out) return;
+        out.textContent = "Loading…";
+        try {
+          const data = await fetchJson("/admin/config/worker", {
+            headers: authHeaders(false),
+          });
+          _setWorkerForm(data.worker);
+          out.textContent = data.config_path
+            ? "Loaded from " + data.config_path
+            : "Loaded.";
+        } catch (err) {
+          out.textContent = String(err);
+        }
+      }
+
+      async function saveWorkerConfig() {
+        const out = document.getElementById("workerConfigResult");
+        if (!out) return;
+        const timeout = parseInt(document.getElementById("wkTimeout").value, 10);
+        const retries = parseInt(document.getElementById("wkRetries").value, 10);
+        const memoryTopK = parseInt(document.getElementById("wkMemoryTopK").value, 10);
+        if (!Number.isFinite(timeout) || !Number.isFinite(retries) || !Number.isFinite(memoryTopK)) {
+          out.textContent = "Invalid number in timeout, retries, or memory_top_k.";
+          return;
+        }
+        const body = {
+          cursor_cli_path: document.getElementById("wkCursorCli").value.trim() || "cursor",
+          workspace_root:
+            document.getElementById("wkWorkspaceRoot").value.trim() || "~/.kragen/workspaces",
+          timeout_seconds: timeout,
+          retries: retries,
+          memory_context_enabled: document.getElementById("wkMemoryEnabled").checked,
+          memory_top_k: memoryTopK,
+        };
+        out.textContent = "Saving…";
+        try {
+          const data = await fetchJson("/admin/config/worker", {
+            method: "PUT",
+            headers: authHeaders(true),
+            body: JSON.stringify(body),
+          });
+          _setWorkerForm(data.worker);
+          out.textContent =
+            "Saved to " + (data.path || "?") + ". New tasks will use these values.";
+        } catch (err) {
+          out.textContent = String(err);
+        }
+      }
+
+      navChatEl.addEventListener("click", () => showTab("chat"));
+      navDiagnosticsEl.addEventListener("click", () => showTab("diagnostics"));
+      navConfigEl.addEventListener("click", () => showTab("config"));
+
+      const diagMemoryCheckBtn = document.getElementById("diagMemoryCheck");
+      if (diagMemoryCheckBtn) {
+        diagMemoryCheckBtn.addEventListener("click", () => {
+          loadLongTermMemoryStatus().catch((err) => {
+            const body = document.getElementById("diagMemoryStatus");
+            if (body) body.textContent = String(err);
+          });
+        });
+      }
+
+      const diagLogsRefreshBtn = document.getElementById("diagLogsRefresh");
+      if (diagLogsRefreshBtn) {
+        diagLogsRefreshBtn.addEventListener("click", () => {
+          loadDiagnosticsLogs().catch((err) => {
+            const body = document.getElementById("diagLogsBody");
+            if (body) body.textContent = String(err);
+          });
+        });
+      }
+      const diagLogsClearBtn = document.getElementById("diagLogsClear");
+      if (diagLogsClearBtn) {
+        diagLogsClearBtn.addEventListener("click", () => {
+          if (
+            !confirm(
+              "Clear the in-memory log buffer for this API process? (stdout logging is unchanged.)"
+            )
+          ) {
+            return;
+          }
+          clearDiagnosticsLogBuffer().catch((err) => {
+            const body = document.getElementById("diagLogsBody");
+            if (body) body.textContent = String(err);
+          });
+        });
+      }
+      const diagLogsLimitEl = document.getElementById("diagLogsLimit");
+      if (diagLogsLimitEl) {
+        diagLogsLimitEl.addEventListener("change", () => {
+          loadDiagnosticsLogs().catch(() => {});
+        });
+      }
+      const diagLogsAutoEl = document.getElementById("diagLogsAuto");
+      if (diagLogsAutoEl) {
+        diagLogsAutoEl.addEventListener("change", () => {
+          syncDiagLogsAuto();
+        });
+      }
+
+      /**
+       * GET /health — verifies TCP + HTTP reachability; does not require auth.
+       */
+      async function verifyConnection() {
+        configVerifyResultEl.textContent = "Checking...";
+        try {
+          const res = await fetch(`${apiBase()}/health`, { method: "GET" });
+          const text = await res.text();
+          let pretty = text;
+          try {
+            pretty = JSON.stringify(JSON.parse(text), null, 2);
+          } catch (_) {
+            /* leave raw text */
+          }
+          configVerifyResultEl.textContent = `HTTP ${res.status} ${res.statusText}\n\n${pretty}`;
+        } catch (err) {
+          configVerifyResultEl.textContent = `Error: ${err}`;
+        }
+      }
+
+      document.getElementById("verifyConfig").addEventListener("click", () => {
+        verifyConnection().catch((err) => {
+          configVerifyResultEl.textContent = `Error: ${err}`;
+        });
+      });
+
+      const reloadKragenYamlBtn = document.getElementById("reloadKragenYaml");
+      if (reloadKragenYamlBtn) {
+        reloadKragenYamlBtn.addEventListener("click", () => {
+          loadKragenYaml().catch(() => {});
+        });
+      }
+
+      const loadWorkerConfigBtn = document.getElementById("loadWorkerConfig");
+      if (loadWorkerConfigBtn) {
+        loadWorkerConfigBtn.addEventListener("click", () => {
+          loadWorkerConfig().catch(() => {});
+        });
+      }
+      const saveWorkerConfigBtn = document.getElementById("saveWorkerConfig");
+      if (saveWorkerConfigBtn) {
+        saveWorkerConfigBtn.addEventListener("click", () => {
+          saveWorkerConfig().catch(() => {});
+        });
+      }
+
+      function apiBase() {
+        return apiInput.value.replace(/\/$/, "");
+      }
+
+      function authHeaders(contentType = true) {
+        const headers = { Authorization: "Bearer " + tokenInput.value.trim() };
+        if (contentType) headers["Content-Type"] = "application/json";
+        return headers;
+      }
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function appendStatus(text) {
+        statusEl.textContent += (statusEl.textContent ? "\n" : "") + text;
+      }
+
+      function setCursorAuth(text) {
+        cursorAuthEl.textContent = text;
+      }
+
+      function setTaskState(text) {
+        taskStateEl.textContent = text;
+      }
+
+      function stopTaskPolling() {
+        if (taskPollTimer) {
+          clearInterval(taskPollTimer);
+          taskPollTimer = null;
+        }
+      }
+
+      async function fetchJson(path, options = {}, retries = 1) {
+        let lastError = null;
+        for (let attempt = 1; attempt <= retries + 1; attempt++) {
+          try {
+            const response = await fetch(`${apiBase()}${path}`, options);
+            if (!response.ok) {
+              const body = await response.text();
+              if (response.status >= 500 && attempt <= retries) {
+                await new Promise((r) => setTimeout(r, 250 * attempt));
+                continue;
+              }
+              const httpError = new Error(
+                `${response.status} ${response.statusText}: ${body}`
+              );
+              httpError.nonRetryable = response.status < 500;
+              throw httpError;
+            }
+            return response.json();
+          } catch (err) {
+            lastError = err;
+            if (!err?.nonRetryable && attempt <= retries) {
+              await new Promise((r) => setTimeout(r, 250 * attempt));
+              continue;
+            }
+            throw lastError;
+          }
+        }
+        throw lastError || new Error("Unknown request error");
+      }
+
+      async function loadWorkspaces() {
+        const items = await fetchJson(
+          "/workspaces",
+          {
+            headers: authHeaders(false),
+          },
+          1
+        );
+        workspaceSelect.innerHTML = "";
+        for (const ws of items) {
+          const opt = document.createElement("option");
+          opt.value = ws.id;
+          opt.textContent = `${ws.name} (${ws.id})`;
+          workspaceSelect.appendChild(opt);
+        }
+        if (!items.length) {
+          setStatus("No workspaces found for this user.");
+        }
+      }
+
+      async function checkCursorAuth() {
+        const data = await fetchJson("/admin/cursor-auth/status", {
+          headers: authHeaders(false),
+        });
+        if (data.ok) {
+          const email = data.parsed?.userInfo?.email || "unknown";
+          setCursorAuth(`Authenticated as ${email}`);
+        } else {
+          setCursorAuth("Not authenticated. Click 'Start Login Flow'.");
+        }
+      }
+
+      async function startCursorLogin() {
+        const data = await fetchJson("/admin/cursor-auth/login", {
+          method: "POST",
+          headers: authHeaders(false),
+        });
+        if (data.already_authenticated) {
+          setCursorAuth("Already authenticated.");
+          return;
+        }
+        if (data.authentication_url) {
+          setCursorAuth(`Open this URL in your browser:\n${data.authentication_url}`);
+          window.open(data.authentication_url, "_blank", "noopener,noreferrer");
+        } else {
+          setCursorAuth(
+            "Could not extract login URL.\n" + (data.output_excerpt || "No output.")
+          );
+        }
+      }
+
+      async function loadSessions() {
+        const wid = workspaceSelect.value;
+        if (!wid) {
+          sessionSelect.innerHTML = "";
+          return;
+        }
+        const sessions = await fetchJson(
+          `/sessions?workspace_id=${wid}&limit=100`,
+          {
+            headers: authHeaders(false),
+          },
+          1
+        );
+        sessionSelect.innerHTML = "";
+        for (const s of sessions) {
+          const opt = document.createElement("option");
+          opt.value = s.id;
+          opt.textContent = `${s.title || "Untitled"} (${s.id})`;
+          sessionSelect.appendChild(opt);
+        }
+        if (!sessions.length) {
+          appendStatus("No sessions in selected workspace yet.");
+        }
+      }
+
+      async function createSession() {
+        const wid = workspaceSelect.value;
+        if (!wid) {
+          throw new Error("Select a workspace first.");
+        }
+        const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+        const body = {
+          workspace_id: wid,
+          title: `Web chat ${now}`,
+          channel_type: "web",
+        };
+        const session = await fetchJson(
+          "/sessions",
+          {
+            method: "POST",
+            headers: authHeaders(true),
+            body: JSON.stringify(body),
+          },
+          1
+        );
+        await loadSessions();
+        sessionSelect.value = session.id;
+        appendStatus(`Created session ${session.id}`);
+        return session.id;
+      }
+
+      async function getTask(taskId) {
+        return fetchJson(`/tasks/${taskId}`, { headers: authHeaders(false) }, 1);
+      }
+
+      function startTaskPolling(taskId) {
+        stopTaskPolling();
+        taskPollTimer = setInterval(async () => {
+          try {
+            const t = await getTask(taskId);
+            setTaskState(
+              `task_id=${t.id}\nstatus=${t.status}\nupdated_at=${t.updated_at}\nerror=${
+                t.error || "-"
+              }`
+            );
+            if (["completed", "failed"].includes(t.status)) {
+              stopTaskPolling();
+            }
+          } catch (err) {
+            setTaskState(`Task status polling error: ${err}`);
+            stopTaskPolling();
+          }
+        }, 1000);
+      }
+
+      /**
+       * Decode one SSE `data:` line. Server sends JSON strings; `{}` ends the stream; legacy sends raw text.
+       */
+      function decodeTaskSseDataLine(line) {
+        if (!line.startsWith("data: ")) return null;
+        const raw = line.slice(6).trimEnd();
+        if (raw === "") return null;
+        try {
+          const v = JSON.parse(raw);
+          if (typeof v === "string") return v;
+          if (
+            v &&
+            typeof v === "object" &&
+            !Array.isArray(v) &&
+            Object.keys(v).length === 0
+          ) {
+            return null;
+          }
+          return String(v);
+        } catch {
+          return raw;
+        }
+      }
+
+      /**
+       * Consume the task SSE stream and render chunks into the Live stream panel as Markdown.
+       */
+      async function streamTask(taskId) {
+        const controller = new AbortController();
+        const timeoutId =
+          STREAM_TIMEOUT_MS > 0
+            ? setTimeout(() => controller.abort(), STREAM_TIMEOUT_MS)
+            : null;
+        let streamText = "";
+        setStreamMarkdown("_Connecting…_");
+        try {
+          const res = await fetch(`${apiBase()}/tasks/${taskId}/stream`, {
+            headers: authHeaders(false),
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) {
+            const errBody = await res.text();
+            streamText = "**Stream error** (`HTTP " + res.status + "`)\n\n```\n" + errBody + "\n```";
+            setStreamMarkdown(streamText);
+            return;
+          }
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          streamText = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split("\n\n");
+            buffer = blocks.pop() || "";
+            for (const block of blocks) {
+              for (const line of block.split("\n")) {
+                const piece = decodeTaskSseDataLine(line);
+                if (piece !== null) {
+                  streamText += piece;
+                  setStreamMarkdown(streamText);
+                }
+              }
+            }
+          }
+          if (buffer) {
+            for (const line of buffer.split("\n")) {
+              const piece = decodeTaskSseDataLine(line);
+              if (piece !== null) streamText += piece;
+            }
+            setStreamMarkdown(streamText);
+          }
+        } catch (err) {
+          let detail = String(err);
+          if (err && err.name === "AbortError") {
+            detail =
+              "AbortError (client stopped waiting for the SSE stream). " +
+              (STREAM_TIMEOUT_MS > 0
+                ? `Timeout was ${STREAM_TIMEOUT_MS} ms — increase or remove via URL (omit streamTimeoutMs). `
+                : "") +
+              "The worker may still be running; check **Diagnostics → Task State** and **Messages**.";
+          }
+          streamText +=
+            (streamText ? "\n\n" : "") + "**Stream interrupted**\n\n" + detail;
+          setStreamMarkdown(streamText);
+        } finally {
+          if (timeoutId !== null) clearTimeout(timeoutId);
+        }
+      }
+
+      /**
+       * Load message history. Pass sessionIdOverride when the dropdown may not
+       * yet reflect the session used for the last send (long SSE / async races).
+       */
+      async function loadMessages(sessionIdOverride) {
+        const sid = sessionIdOverride ?? sessionSelect.value;
+        if (!sid) {
+          messagesEl.innerHTML = "";
+          return;
+        }
+        const messages = await fetchJson(`/sessions/${sid}/messages`, {
+          headers: authHeaders(false),
+        });
+        messagesEl.innerHTML = "";
+        for (const m of messages) {
+          const roleName = (m.role || "unknown").toLowerCase();
+          const block = document.createElement("div");
+          block.className = "msg-block msg-" + roleName;
+          const roleEl = document.createElement("div");
+          roleEl.className = "msg-role";
+          roleEl.textContent = m.role || "unknown";
+          const body = document.createElement("div");
+          body.className = "msg-body";
+          body.innerHTML = renderMarkdownSafe(m.content || "");
+          block.appendChild(roleEl);
+          block.appendChild(body);
+          messagesEl.appendChild(block);
+        }
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      function clearPanels() {
+        messagesEl.innerHTML = "";
+        streamEl.innerHTML = "";
+        statusEl.textContent = "";
+        taskStateEl.textContent = "";
+      }
+
+      async function createCleanSession() {
+        const sid = await createSession();
+        clearPanels();
+        appendStatus(`Clean session ready: ${sid}`);
+        await loadMessages();
+      }
+
+      async function sendMessage() {
+        let sid = sessionSelect.value;
+        if (!sid) sid = await createSession();
+        const content = messageInput.value.trim();
+        if (!content) {
+          throw new Error("Message is empty.");
+        }
+        const payload = { role: "user", content, metadata: {} };
+        const posted = await fetchJson(
+          `/sessions/${sid}/messages`,
+          {
+            method: "POST",
+            headers: authHeaders(true),
+            body: JSON.stringify(payload),
+          },
+          1
+        );
+        const sessionIdForHistory =
+          posted.message && posted.message.session_id
+            ? String(posted.message.session_id)
+            : String(sid);
+        if (sessionSelect.value !== sessionIdForHistory) {
+          sessionSelect.value = sessionIdForHistory;
+        }
+        appendStatus(`Task ${posted.task.id} started`);
+        setTaskState(`task_id=${posted.task.id}\nstatus=queued`);
+        startTaskPolling(posted.task.id);
+        try {
+          await streamTask(posted.task.id);
+        } catch (err) {
+          setTaskState(`Stream error: ${err}`);
+        }
+        const finalTask = await getTask(posted.task.id);
+        setTaskState(
+          `task_id=${finalTask.id}\nstatus=${finalTask.status}\nupdated_at=${finalTask.updated_at}\nerror=${
+            finalTask.error || "-"
+          }`
+        );
+        stopTaskPolling();
+        sessionSelect.value = sessionIdForHistory;
+        await loadMessages(sessionIdForHistory);
+      }
+
+      async function bootstrap() {
+        setStatus("Loading workspaces...");
+        await loadWorkspaces();
+        await loadSessions();
+        await loadMessages();
+        await checkCursorAuth();
+        appendStatus("Ready.");
+      }
+
+      document.getElementById("refresh").onclick = async () => {
+        try {
+          setStatus("");
+          await bootstrap();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      workspaceSelect.onchange = async () => {
+        try {
+          await loadSessions();
+          await loadMessages();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      sessionSelect.onchange = async () => {
+        try {
+          await loadMessages();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      document.getElementById("newSession").onclick = async () => {
+        try {
+          await createSession();
+          await loadMessages();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      document.getElementById("newCleanSession").onclick = async () => {
+        try {
+          await createCleanSession();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      document.getElementById("send").onclick = async () => {
+        try {
+          await sendMessage();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      document.getElementById("reloadMessages").onclick = async () => {
+        try {
+          await loadMessages();
+        } catch (err) {
+          setStatus(String(err));
+        }
+      };
+      document.getElementById("clearPanels").onclick = () => {
+        clearPanels();
+      };
+      document.getElementById("checkCursorAuth").onclick = async () => {
+        try {
+          await checkCursorAuth();
+        } catch (err) {
+          setCursorAuth(String(err));
+        }
+      };
+      document.getElementById("startCursorLogin").onclick = async () => {
+        try {
+          await startCursorLogin();
+        } catch (err) {
+          setCursorAuth(String(err));
+        }
+      };
+
+      bootstrap().catch((err) => setStatus(String(err)));
+    </script>
+  </body>
+</html>

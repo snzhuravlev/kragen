@@ -1,0 +1,23 @@
+[Unit]
+Description=Kragen Combined Service (API + Telegram)
+After=network.target
+
+[Service]
+Type=simple
+User=kragen
+Group=kragen
+WorkingDirectory=/opt/kragen
+Environment=KRAGEN_CONFIG_FILE=/etc/kragen/kragen.yaml
+EnvironmentFile=-/etc/kragen/kragen-service.env
+# Optional runtime overrides:
+# Environment=KRAGEN_TELEGRAM_MODE=webhook
+# Environment=KRAGEN_TELEGRAM_WEBHOOK_PUBLIC_URL=https://bot.example.com
+# Environment=KRAGEN_TELEGRAM_WEBHOOK_SECRET_TOKEN=REPLACE_ME
+ExecStart=/opt/kragen/.venv/bin/kragen-service
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
