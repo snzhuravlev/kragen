@@ -15,7 +15,7 @@ api:
 
 database:
   # Replace with your PostgreSQL 18 + pgvector connection string.
-  url: postgresql+asyncpg://kragen:CHANGE_ME@127.0.0.1:5432/kragen
+  url: postgresql+asyncpg://kragen:XSW123edc@127.0.0.1:5432/kragen
 
 storage:
   endpoint_url: http://127.0.0.1:9000
@@ -56,10 +56,10 @@ plugins:
 
 telegram_channel:
   # Test profile for kragen-telegram-channel. Keep production secrets in env.
-  bot_token: "1234567890:TEST_BOT_TOKEN_REPLACE_ME"
+  bot_token: "8743142034:AAESs0NxuJmu6oJX3Lms9GRz3pASb7EH9Ak"
   api_base_url: "http://127.0.0.1:8000"
-  auth_user_id: "00000000-0000-0000-0000-000000000001"
-  default_workspace_id: "00000000-0000-0000-0000-000000000001"
+  auth_user_id: "00000000-0000-0000-0000-000000001111"
+  default_workspace_id: "00000000-0000-0000-0000-000000001111"
 
   # Mode: polling | webhook
   mode: "polling"
