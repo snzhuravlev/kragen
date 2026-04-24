@@ -4,16 +4,17 @@ After=network.target
 
 [Service]
 Type=simple
-User=kragen
-Group=kragen
-WorkingDirectory=/opt/kragen
-Environment=KRAGEN_CONFIG_FILE=/etc/kragen/kragen.yaml
+User=srg
+Group=srg
+WorkingDirectory=/home/srg/projects/kragen
+Environment=KRAGEN_CONFIG_FILE=/home/srg/projects/kragen/configs/kragen.yaml
+Environment=KRAGEN_AUTH__DISABLED=false
 EnvironmentFile=-/etc/kragen/kragen-service.env
 # Optional runtime overrides:
 # Environment=KRAGEN_TELEGRAM_MODE=webhook
 # Environment=KRAGEN_TELEGRAM_WEBHOOK_PUBLIC_URL=https://bot.example.com
 # Environment=KRAGEN_TELEGRAM_WEBHOOK_SECRET_TOKEN=REPLACE_ME
-ExecStart=/opt/kragen/.venv/bin/kragen-service
+ExecStart=/home/srg/projects/kragen/.venv/bin/python -c "from kragen.cli.service_runner import main; main()"
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM

@@ -143,8 +143,8 @@ def search_memory(
             JOIN documents d ON d.id = dc.document_id
             WHERE d.workspace_id = %s
               AND (
-                    dc.content ILIKE '%' || %s || '%'
-                 OR to_tsvector('simple', dc.content) @@ plainto_tsquery('simple', %s)
+                    dc.content ILIKE concat('%%', CAST(%s AS text), '%%')
+                 OR to_tsvector('simple', dc.content) @@ plainto_tsquery('simple', CAST(%s AS text))
               )
             ORDER BY dc.created_at DESC
             LIMIT %s
@@ -167,8 +167,8 @@ def search_memory(
                 JOIN sessions s ON s.id = ss.session_id
                 WHERE ss.session_id = %s
                   AND (
-                        ss.summary_text ILIKE '%' || %s || '%'
-                     OR to_tsvector('simple', ss.summary_text) @@ plainto_tsquery('simple', %s)
+                        ss.summary_text ILIKE concat('%%', CAST(%s AS text), '%%')
+                     OR to_tsvector('simple', ss.summary_text) @@ plainto_tsquery('simple', CAST(%s AS text))
                   )
                 ORDER BY ss.updated_at DESC
                 LIMIT %s
@@ -188,8 +188,8 @@ def search_memory(
                 JOIN sessions s ON s.id = ss.session_id
                 WHERE s.workspace_id = %s
                   AND (
-                        ss.summary_text ILIKE '%' || %s || '%'
-                     OR to_tsvector('simple', ss.summary_text) @@ plainto_tsquery('simple', %s)
+                        ss.summary_text ILIKE concat('%%', CAST(%s AS text), '%%')
+                     OR to_tsvector('simple', ss.summary_text) @@ plainto_tsquery('simple', CAST(%s AS text))
                   )
                 ORDER BY ss.updated_at DESC
                 LIMIT %s
@@ -210,9 +210,9 @@ def search_memory(
             FROM semantic_facts sf
             WHERE sf.workspace_id = %s
               AND (
-                    sf.fact_text ILIKE '%' || %s || '%'
-                 OR sf.entity ILIKE '%' || %s || '%'
-                 OR to_tsvector('simple', sf.fact_text) @@ plainto_tsquery('simple', %s)
+                    sf.fact_text ILIKE concat('%%', CAST(%s AS text), '%%')
+                 OR sf.entity ILIKE concat('%%', CAST(%s AS text), '%%')
+                 OR to_tsvector('simple', sf.fact_text) @@ plainto_tsquery('simple', CAST(%s AS text))
               )
             ORDER BY sf.updated_at DESC
             LIMIT %s

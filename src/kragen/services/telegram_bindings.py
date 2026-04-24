@@ -72,6 +72,34 @@ async def resolve_or_create_binding(
         await db.flush()
         return binding
 
+    # Existing binding may point to a session created with another user/workspace
+    # (for example after operator changed Telegram auth_user_id/default_workspace_id).
+    session_result = await db.execute(select(Session).where(Session.id == binding.session_id))
+    bound_session = session_result.scalar_one_or_none()
+    if (
+        bound_session is None
+        or bound_session.user_id != user_id
+        or bound_session.workspace_id != workspace_id
+    ):
+        channel = Channel(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            type="telegram",
+            external_ref=str(chat_id),
+            metadata_={},
+        )
+        db.add(channel)
+        await db.flush()
+        session = Session(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            channel_id=channel.id,
+            title=f"Telegram chat {chat_id}",
+        )
+        db.add(session)
+        await db.flush()
+        binding.session_id = session.id
+
     binding.workspace_id = workspace_id
     binding.user_id = user_id
     binding.username = username

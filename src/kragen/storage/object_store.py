@@ -6,6 +6,7 @@ import hashlib
 from typing import TYPE_CHECKING, Any
 
 import aioboto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from kragen.config import get_settings
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     pass
 
 logger = get_logger(__name__)
+_S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
 
 # Reuse aioboto3 session (lightweight; clients are still created per operation).
 _aio_session: aioboto3.Session | None = None
@@ -35,6 +37,7 @@ async def ensure_bucket_exists() -> None:
         endpoint_url=settings.storage.endpoint_url,
         aws_access_key_id=settings.storage.access_key,
         aws_secret_access_key=settings.storage.secret_key,
+        config=_S3_PATH_STYLE_CONFIG,
     ) as client:
         try:
             await client.head_bucket(Bucket=settings.storage.bucket)
@@ -54,6 +57,7 @@ async def put_bytes(*, key: str, body: bytes, content_type: str | None = None) -
         endpoint_url=settings.storage.endpoint_url,
         aws_access_key_id=settings.storage.access_key,
         aws_secret_access_key=settings.storage.secret_key,
+        config=_S3_PATH_STYLE_CONFIG,
     ) as client:
         await client.put_object(Bucket=settings.storage.bucket, Key=key, Body=body, **extra)
     return f"s3://{settings.storage.bucket}/{key}"
