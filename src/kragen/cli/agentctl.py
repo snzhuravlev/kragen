@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import sys
-import uuid
 from typing import Any
 
 import httpx

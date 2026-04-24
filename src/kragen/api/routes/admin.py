@@ -1,22 +1,24 @@
-"""Admin API: workers stub, audit and retrieval listings."""
+"""Admin API: admin-only operations, audit and retrieval listings with scoping."""
 
+from __future__ import annotations
+
+import asyncio
 import json
 import os
 import re
-import subprocess
-from typing import Any
-
+import uuid
 from pathlib import Path
+from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select, text
 
-from kragen.api.deps import DbSession, UserId
+from kragen.api.deps import AdminUserId, DbSession, UserId, ensure_workspace_access, is_admin_user
 from kragen.api.schemas import AuditEventOut, RetrievalLogOut
 from kragen.config import WorkerSettings, clear_settings_cache, get_config_yaml_path, get_settings
-from kragen.models.retrieval import RetrievalLog
 from kragen.models.core import AuditEvent
+from kragen.models.retrieval import RetrievalLog
 from kragen.services import log_buffer
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -30,39 +32,60 @@ _MEMORY_STATUS_TABLES = (
     "document_chunks",
 )
 
+# YAML sections/keys masked before returning kragen.yaml over the admin API.
+_SENSITIVE_YAML_PATHS: tuple[tuple[str, ...], ...] = (
+    ("database", "url"),
+    ("storage", "access_key"),
+    ("storage", "secret_key"),
+    ("auth", "jwt_secret"),
+    ("telegram_channel", "bot_token"),
+    ("telegram_channel", "webhook_secret_token"),
+)
+_MASK_VALUE = "***masked***"
+_DSN_MASK_RE = re.compile(r"(?P<scheme>[a-z0-9+\-]+://[^:@\s/]+):[^@\s/]+@")
 
-def _run_command(
+
+async def _run_command(
     args: list[str],
     *,
     timeout_seconds: int = 12,
     extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Run a command and return captured output including timeout metadata."""
+    """Run a command asynchronously and return captured output and timeout flag."""
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+    )
     try:
-        completed = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(),
             timeout=timeout_seconds,
-            env=env,
-            check=False,
         )
-        return {
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "timed_out": False,
-        }
-    except subprocess.TimeoutExpired as exc:
-        return {
-            "exit_code": None,
-            "stdout": exc.stdout or "",
-            "stderr": exc.stderr or "",
-            "timed_out": True,
-        }
+        timed_out = False
+    except TimeoutError:
+        timed_out = True
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        stdout_bytes = b""
+        stderr_bytes = b""
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except (ProcessLookupError, TimeoutError):
+            pass
+
+    return {
+        "exit_code": proc.returncode,
+        "stdout": stdout_bytes.decode("utf-8", errors="replace"),
+        "stderr": stderr_bytes.decode("utf-8", errors="replace"),
+        "timed_out": timed_out,
+    }
 
 
 def _cursor_cli() -> str:
@@ -83,18 +106,63 @@ def _read_yaml_mapping(path: Path) -> dict[str, Any]:
 
 def _write_yaml_mapping(path: Path, data: dict[str, Any]) -> None:
     """Write YAML mapping to file (atomic replace via same path)."""
-    text = yaml.safe_dump(
+    rendered = yaml.safe_dump(
         data,
         allow_unicode=True,
         sort_keys=False,
         default_flow_style=False,
     )
-    path.write_text(text, encoding="utf-8")
+    path.write_text(rendered, encoding="utf-8")
+
+
+def _mask_dsn_password(dsn: str) -> str:
+    """Replace password in a DSN-looking value with ``***masked***``.
+
+    Leaves non-DSN strings untouched.
+    """
+    if "://" not in dsn or "@" not in dsn:
+        return _MASK_VALUE
+    return _DSN_MASK_RE.sub(r"\g<scheme>:" + _MASK_VALUE + "@", dsn, count=1)
+
+
+def _mask_sensitive_yaml(text_content: str) -> str:
+    """Load YAML, mask sensitive values, and render it back.
+
+    On parse failure returns ``_MASK_VALUE`` to avoid leaking raw secrets.
+    """
+    try:
+        data = yaml.safe_load(text_content)
+    except yaml.YAMLError:
+        return f"# {_MASK_VALUE}\n"
+
+    if not isinstance(data, dict):
+        return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+
+    for path in _SENSITIVE_YAML_PATHS:
+        cursor: Any = data
+        for key in path[:-1]:
+            if not isinstance(cursor, dict):
+                cursor = None
+                break
+            cursor = cursor.get(key)
+        if not isinstance(cursor, dict):
+            continue
+        leaf = path[-1]
+        if leaf not in cursor or cursor[leaf] is None:
+            continue
+        value = cursor[leaf]
+        if isinstance(value, str) and "://" in value:
+            cursor[leaf] = _mask_dsn_password(value)
+        else:
+            cursor[leaf] = _MASK_VALUE
+
+    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False)
 
 
 @router.get("/workers")
-async def list_workers() -> list[dict[str, Any]]:
+async def list_workers(admin_id: AdminUserId) -> list[dict[str, Any]]:
     """Placeholder worker registry until separate worker pool exists."""
+    _ = admin_id
     return [
         {"id": "local-stub", "status": "idle", "runtime": "stub"},
     ]
@@ -102,7 +170,7 @@ async def list_workers() -> list[dict[str, Any]]:
 
 @router.get("/logs")
 async def get_recent_logs(
-    user_id: UserId,
+    admin_id: AdminUserId,
     limit: int = Query(default=800, ge=1, le=5000, description="Max lines to return (newest last)."),
 ) -> dict[str, Any]:
     """
@@ -110,7 +178,7 @@ async def get_recent_logs(
 
     In-memory ring buffer only; multi-worker deployments see one worker per process.
     """
-    _ = user_id
+    _ = admin_id
     lines = log_buffer.get_recent_lines(limit=limit)
     st = log_buffer.stats()
     return {
@@ -123,22 +191,21 @@ async def get_recent_logs(
 
 
 @router.post("/logs/clear")
-async def clear_log_buffer(user_id: UserId) -> dict[str, bool]:
+async def clear_log_buffer(admin_id: AdminUserId) -> dict[str, bool]:
     """Clear the in-memory log buffer (does not affect stdout logging)."""
-    _ = user_id
+    _ = admin_id
     log_buffer.clear()
     return {"ok": True}
 
 
 @router.get("/memory/status")
-async def long_term_memory_status(db: DbSession, user_id: UserId) -> dict[str, Any]:
+async def long_term_memory_status(db: DbSession, admin_id: AdminUserId) -> dict[str, Any]:
     """
     Verify PostgreSQL connectivity and tables used for worker prompt memory injection.
 
-    Use this from the same host as the API process. Cursor IDE agents cannot reach your DB
-    from their sandbox; this endpoint reflects what the Kragen worker actually can query.
+    Admin-only: this endpoint exposes the presence of internal tables and raw error text.
     """
-    _ = user_id
+    _ = admin_id
     try:
         await db.execute(text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
@@ -171,11 +238,28 @@ async def long_term_memory_status(db: DbSession, user_id: UserId) -> dict[str, A
 async def list_audit(
     db: DbSession,
     user_id: UserId,
-    limit: int = 50,
+    workspace_id: uuid.UUID | None = Query(
+        default=None,
+        description="Scope events to a single workspace. Required for non-admin callers.",
+    ),
+    limit: int = Query(default=50, ge=1, le=500),
 ) -> list[AuditEventOut]:
-    """Recent audit events (scope by workspace in production)."""
-    _ = user_id
-    result = await db.execute(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(limit))
+    """Recent audit events scoped by workspace membership (admin may list all)."""
+    is_admin = is_admin_user(user_id)
+    if workspace_id is None and not is_admin:
+        raise HTTPException(
+            status_code=400,
+            detail="workspace_id query parameter is required",
+        )
+    if workspace_id is not None:
+        await ensure_workspace_access(db, user_id=user_id, workspace_id=workspace_id)
+
+    stmt = select(AuditEvent)
+    if workspace_id is not None:
+        stmt = stmt.where(AuditEvent.workspace_id == workspace_id)
+    stmt = stmt.order_by(AuditEvent.created_at.desc()).limit(limit)
+
+    result = await db.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -183,43 +267,54 @@ async def list_audit(
 async def list_retrieval_logs(
     db: DbSession,
     user_id: UserId,
-    limit: int = 50,
+    workspace_id: uuid.UUID | None = Query(
+        default=None,
+        description="Scope retrieval logs to a single workspace. Required for non-admin callers.",
+    ),
+    limit: int = Query(default=50, ge=1, le=500),
 ) -> list[RetrievalLogOut]:
-    """Recent retrieval operations."""
-    _ = user_id
-    result = await db.execute(
-        select(RetrievalLog).order_by(RetrievalLog.created_at.desc()).limit(limit)
-    )
+    """Recent retrieval operations scoped by workspace membership."""
+    is_admin = is_admin_user(user_id)
+    if workspace_id is None and not is_admin:
+        raise HTTPException(
+            status_code=400,
+            detail="workspace_id query parameter is required",
+        )
+    if workspace_id is not None:
+        await ensure_workspace_access(db, user_id=user_id, workspace_id=workspace_id)
+
+    stmt = select(RetrievalLog)
+    if workspace_id is not None:
+        stmt = stmt.where(RetrievalLog.workspace_id == workspace_id)
+    stmt = stmt.order_by(RetrievalLog.created_at.desc()).limit(limit)
+
+    result = await db.execute(stmt)
     return list(result.scalars().all())
 
 
 @router.get("/config/kragen-yaml")
-async def get_kragen_yaml_file(user_id: UserId) -> dict[str, Any]:
+async def get_kragen_yaml_file(admin_id: AdminUserId) -> dict[str, Any]:
     """
-    Return the raw contents of the resolved kragen.yaml file (same path as app settings).
+    Return the resolved kragen.yaml contents with sensitive values masked.
 
-    Used by the Web UI Configuration tab. Requires authentication like other /admin routes.
+    The response masks DSN passwords and secret fields (database URL, storage
+    keys, JWT secret, Telegram tokens). This endpoint is admin-only.
     """
-    _ = user_id
+    _ = admin_id
     path: Path = get_config_yaml_path()
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Config file not found: {path}")
     try:
-        content = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Cannot read config file: {exc}") from exc
-    return {"path": str(path), "content": content}
+    return {"path": str(path), "content": _mask_sensitive_yaml(raw)}
 
 
 @router.get("/config/worker")
-async def get_worker_config(user_id: UserId) -> dict[str, Any]:
-    """
-    Effective worker section (Cursor agent timeouts, paths, memory context).
-
-    Values reflect env + YAML merge. Updating via PUT writes `worker` into kragen.yaml and
-    clears the settings cache so new tasks pick up changes without restarting the process.
-    """
-    _ = user_id
+async def get_worker_config(admin_id: AdminUserId) -> dict[str, Any]:
+    """Effective worker section (admin-only)."""
+    _ = admin_id
     w = get_settings().worker
     return {
         "worker": w.model_dump(),
@@ -228,19 +323,17 @@ async def get_worker_config(user_id: UserId) -> dict[str, Any]:
 
 
 @router.put("/config/worker")
-async def put_worker_config(body: WorkerSettings, user_id: UserId) -> dict[str, Any]:
-    """
-    Replace the `worker` key in the resolved kragen.yaml file.
-
-    Other YAML sections are preserved. Environment variables such as ``KRAGEN_WORKER__TIMEOUT_SECONDS``
-    still override file values on load.
-    """
-    _ = user_id
+async def put_worker_config(body: WorkerSettings, admin_id: AdminUserId) -> dict[str, Any]:
+    """Replace the ``worker`` key in kragen.yaml (admin-only)."""
+    _ = admin_id
     path = get_config_yaml_path()
     if not path.is_file():
         raise HTTPException(
             status_code=404,
-            detail=f"Config file not found: {path}. Create configs/kragen.yaml before editing worker settings.",
+            detail=(
+                f"Config file not found: {path}. Create configs/kragen.yaml before "
+                "editing worker settings."
+            ),
         )
     try:
         data = _read_yaml_mapping(path)
@@ -257,10 +350,13 @@ async def put_worker_config(body: WorkerSettings, user_id: UserId) -> dict[str, 
 
 
 @router.get("/cursor-auth/status")
-async def cursor_auth_status(user_id: UserId) -> dict[str, Any]:
+async def cursor_auth_status(admin_id: AdminUserId) -> dict[str, Any]:
     """Return Cursor Agent authentication status for the current host user."""
-    _ = user_id
-    run = _run_command([_cursor_cli(), "agent", "status", "--format", "json"], timeout_seconds=10)
+    _ = admin_id
+    run = await _run_command(
+        [_cursor_cli(), "agent", "status", "--format", "json"],
+        timeout_seconds=10,
+    )
     raw = (run["stdout"] or "").strip()
     parsed: dict[str, Any] | None = None
     if raw:
@@ -279,17 +375,13 @@ async def cursor_auth_status(user_id: UserId) -> dict[str, Any]:
 
 
 @router.post("/cursor-auth/login")
-async def cursor_auth_login(user_id: UserId) -> dict[str, Any]:
+async def cursor_auth_login(admin_id: AdminUserId) -> dict[str, Any]:
     """
     Start Cursor Agent login and return the browser URL for authentication.
 
-    The command may wait for browser completion; the API captures initial output
-    and returns quickly, then the client can poll /cursor-auth/status.
+    Admin-only: wraps a host-level CLI invocation.
     """
-    _ = user_id
-
-    # Fast path: already authenticated.
-    status = await cursor_auth_status(user_id)
+    status = await cursor_auth_status(admin_id)
     if status["ok"]:
         return {
             "ok": True,
@@ -297,7 +389,7 @@ async def cursor_auth_login(user_id: UserId) -> dict[str, Any]:
             "message": "Cursor Agent is already authenticated.",
         }
 
-    run = _run_command(
+    run = await _run_command(
         [_cursor_cli(), "agent", "login"],
         timeout_seconds=15,
         extra_env={"NO_OPEN_BROWSER": "1"},

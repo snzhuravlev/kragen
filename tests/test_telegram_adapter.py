@@ -6,8 +6,10 @@ import uuid
 
 from kragen.channels.telegram_adapter import (
     TelegramChannelSettings,
+    _extract_message_payload,
     _health_payload,
     _is_valid_webhook_secret,
+    _safe_filename,
     _split_telegram_message,
 )
 
@@ -50,3 +52,24 @@ def test_health_payload() -> None:
     assert payload["status"] == "ok"
     assert payload["service"] == "kragen-telegram-channel"
     assert payload["mode"] == "webhook"
+
+
+def test_extract_message_payload_from_text() -> None:
+    text, document = _extract_message_payload({"text": "hello"})
+    assert text == "hello"
+    assert document is None
+
+
+def test_extract_message_payload_from_caption_and_document() -> None:
+    message = {
+        "caption": "put this into storage",
+        "document": {"file_id": "abc123", "file_name": "report.pdf"},
+    }
+    text, document = _extract_message_payload(message)
+    assert text == "put this into storage"
+    assert isinstance(document, dict)
+    assert document["file_id"] == "abc123"
+
+
+def test_safe_filename_sanitizes_unsafe_chars() -> None:
+    assert _safe_filename("../q1 report (final).pdf") == "q1_report_final_.pdf"

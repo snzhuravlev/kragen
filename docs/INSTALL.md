@@ -131,6 +131,9 @@ Optional tuning:
 message ids for this amount of time.
 - `KRAGEN_TELEGRAM_DEDUP_CLEANUP_INTERVAL_SECONDS` (default `3600`) —
 background cleanup interval for old dedup rows.
+- `KRAGEN_TELEGRAM_DEDUP_PROCESSING_TIMEOUT_MINUTES` (default `30`) — stuck
+`processing` rows older than this threshold are marked as `failed` so the same
+`(chat_id, message_id)` can be retried.
 
 Mode selection:
 

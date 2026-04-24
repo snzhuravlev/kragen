@@ -1,14 +1,17 @@
-"""FastAPI dependencies: DB, auth context, correlation IDs."""
+"""FastAPI dependencies: DB, auth context, correlation IDs, RBAC."""
 
 import uuid
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import column, table
 
 from kragen.config import get_settings
 from kragen.db.session import get_session
 from kragen.logging_config import get_logger
+from kragen.models.core import Workspace
 
 logger = get_logger(__name__)
 _settings = get_settings()
@@ -74,3 +77,57 @@ async def get_user_id_for_dev(
 
 
 UserId = Annotated[uuid.UUID, Depends(get_user_id_for_dev)]
+
+
+def is_admin_user(user_id: uuid.UUID) -> bool:
+    """Return True when the user is listed in auth.admin_user_ids.
+
+    Reads settings fresh to honor admin list updates after cache invalidation.
+    """
+    admin_ids = {str(x).strip().lower() for x in get_settings().auth.admin_user_ids if x}
+    return str(user_id).lower() in admin_ids
+
+
+async def require_admin_user(user_id: UserId) -> uuid.UUID:
+    """Reject the request when the current user is not an admin."""
+    if not is_admin_user(user_id):
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return user_id
+
+
+AdminUserId = Annotated[uuid.UUID, Depends(require_admin_user)]
+
+
+async def ensure_workspace_access(
+    db: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> None:
+    """Ensure the user can read data scoped to the given workspace.
+
+    Admins pass unconditionally. Other users must either own the workspace or
+    appear in ``workspace_members``.
+    """
+    if is_admin_user(user_id):
+        return
+
+    workspace_members = table(
+        "workspace_members",
+        column("workspace_id"),
+        column("user_id"),
+    )
+    membership_subquery = select(workspace_members.c.workspace_id).where(
+        workspace_members.c.user_id == user_id,
+        workspace_members.c.workspace_id == workspace_id,
+    )
+    stmt = select(Workspace.id).where(
+        Workspace.id == workspace_id,
+        or_(
+            Workspace.owner_user_id == user_id,
+            Workspace.id.in_(membership_subquery),
+        ),
+    )
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=403, detail="No access to this workspace")

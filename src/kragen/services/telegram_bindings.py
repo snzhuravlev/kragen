@@ -266,3 +266,40 @@ async def cleanup_processed_messages(
     rows = result.fetchall()
     await db.flush()
     return len(rows)
+
+
+async def reap_stuck_processing_messages(
+    db: AsyncSession,
+    *,
+    older_than_minutes: int,
+) -> int:
+    """Mark ``processing`` rows older than ``older_than_minutes`` as ``failed``.
+
+    Claims that never reached ``mark_message_status`` (e.g. because the adapter
+    process was killed) would otherwise block the same ``(chat_id, message_id)``
+    from being retried. Moving them to ``failed`` lets ``claim_message_processing``
+    re-acquire them on the next retry and signals the issue for metrics/audit.
+
+    Returns the number of rows marked as failed.
+    """
+    if older_than_minutes <= 0:
+        return 0
+    result = await db.execute(
+        text(
+            """
+            UPDATE telegram_processed_messages
+            SET status = 'failed',
+                error = COALESCE(error, '') ||
+                        CASE WHEN COALESCE(error, '') = '' THEN '' ELSE '\n' END ||
+                        'reaper: processing timeout',
+                updated_at = now()
+            WHERE status = 'processing'
+              AND updated_at < (now() - make_interval(mins => :older_than_minutes))
+            RETURNING id
+            """
+        ),
+        {"older_than_minutes": older_than_minutes},
+    )
+    rows = result.fetchall()
+    await db.flush()
+    return len(rows)

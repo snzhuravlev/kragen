@@ -28,6 +28,10 @@ auth:
   jwt_algorithm: HS256
   disabled: false
   dev_user_id: null
+  # Explicit allow-list for admin API (/admin/config/*, /admin/cursor-auth/*,
+  # /admin/plugins/*, /admin/workers, /admin/logs*, /admin/memory/status).
+  # Empty = no one is admin — safe default.
+  admin_user_ids: []
 
 http:
   cors_allow_origins:
@@ -73,6 +77,9 @@ telegram_channel:
   # Dedup retention/cleanup
   dedup_retention_hours: 168
   dedup_cleanup_interval_seconds: 3600
+  # Stuck `processing` rows older than this many minutes are marked as failed
+  # by the background reaper so the same chat_id/message_id can be retried.
+  dedup_processing_timeout_minutes: 30
 
   # Webhook mode settings (used when mode=webhook)
   webhook_public_url: "https://bot.example.com"

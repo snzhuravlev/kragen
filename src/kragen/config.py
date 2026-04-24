@@ -78,7 +78,7 @@ class StorageSettings(BaseModel):
 
 
 class AuthSettings(BaseModel):
-    """Authentication and development shortcuts."""
+    """Authentication, development shortcuts, and RBAC."""
 
     model_config = SettingsConfigDict(extra="forbid")
 
@@ -86,6 +86,14 @@ class AuthSettings(BaseModel):
     jwt_algorithm: str = "HS256"
     disabled: bool = False
     dev_user_id: str | None = None
+    admin_user_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Explicit allow-list of user UUIDs that may reach admin-only endpoints "
+            "(/admin/config/*, /admin/cursor-auth/*, /admin/plugins/*, /admin/workers, "
+            "/admin/logs*, /admin/memory/status). Empty = no one is admin (safe default)."
+        ),
+    )
 
 
 class HttpSettings(BaseModel):
@@ -160,6 +168,7 @@ class TelegramChannelSettings(BaseModel):
     task_wait_timeout_seconds: int = 300
     dedup_retention_hours: int = 168
     dedup_cleanup_interval_seconds: int = 3600
+    dedup_processing_timeout_minutes: int = 30
     webhook_public_url: str | None = None
     webhook_path: str = "/telegram/webhook"
     webhook_host: str = "0.0.0.0"

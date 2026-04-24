@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from kragen.models.core import Message
 from kragen.services.telegram_bindings import (
     claim_message_processing,
     cleanup_processed_messages,
+    reap_stuck_processing_messages,
     get_binding_by_chat_id,
     is_stale_telegram_update,
     mark_message_status,
@@ -35,6 +37,7 @@ from kragen.services.telegram_bindings import (
     resolve_or_create_binding,
     start_new_chat_session,
 )
+from kragen.storage import object_store
 
 logger = get_logger(__name__)
 
@@ -63,6 +66,7 @@ class TelegramChannelSettings:
     webhook_secret_token: str | None = None
     dedup_retention_hours: int = 168
     dedup_cleanup_interval_seconds: int = 3600
+    dedup_processing_timeout_minutes: int = 30
 
     @property
     def telegram_api_base(self) -> str:
@@ -132,6 +136,12 @@ def _read_settings() -> TelegramChannelSettings:
             os.environ.get(
                 "KRAGEN_TELEGRAM_DEDUP_CLEANUP_INTERVAL_SECONDS",
                 str(yaml_cfg.dedup_cleanup_interval_seconds),
+            )
+        ),
+        dedup_processing_timeout_minutes=int(
+            os.environ.get(
+                "KRAGEN_TELEGRAM_DEDUP_PROCESSING_TIMEOUT_MINUTES",
+                str(yaml_cfg.dedup_processing_timeout_minutes),
             )
         ),
     )
@@ -273,6 +283,33 @@ async def _tg_send_processing_stub(
 
 def _headers(settings: TelegramChannelSettings) -> dict[str, str]:
     return {"Authorization": f"Bearer {settings.auth_user_id}"}
+
+
+def _safe_filename(name: str | None) -> str:
+    """Return filename safe for object-storage key component."""
+    if not name:
+        return "file"
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "file"
+
+
+def _extract_message_payload(message: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    """Extract text/caption and optional document payload from Telegram message."""
+    text_value = message.get("text")
+    text = str(text_value).strip() if isinstance(text_value, str) else None
+    if text == "":
+        text = None
+    if text is None:
+        caption_value = message.get("caption")
+        if isinstance(caption_value, str):
+            caption = caption_value.strip()
+            text = caption or None
+
+    document = message.get("document")
+    if not isinstance(document, dict):
+        return text, None
+    return text, document
 
 
 def _health_payload(settings: TelegramChannelSettings) -> dict[str, str]:
@@ -654,6 +691,124 @@ async def _handle_user_text(
                 await db.rollback()
 
 
+async def _handle_user_document(
+    tg_client: httpx.AsyncClient,
+    *,
+    settings: TelegramChannelSettings,
+    update_id: int,
+    chat_id: int,
+    message_id: int,
+    document: dict[str, Any],
+    text: str | None,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+) -> None:
+    """Download Telegram document, upload to object storage, and confirm in chat."""
+    file_id = document.get("file_id")
+    if not isinstance(file_id, str) or not file_id.strip():
+        raise RuntimeError("Telegram document payload is missing file_id")
+
+    file_name_value = document.get("file_name")
+    file_name = str(file_name_value) if isinstance(file_name_value, str) else "document.bin"
+    mime_value = document.get("mime_type")
+    mime_type = str(mime_value) if isinstance(mime_value, str) else "application/octet-stream"
+    unique_id_value = document.get("file_unique_id")
+    file_unique_id = str(unique_id_value) if isinstance(unique_id_value, str) else file_id
+
+    async with async_session_factory() as db:
+        binding = await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        if is_stale_telegram_update(
+            last_update_id=binding.last_update_id,
+            incoming_update_id=update_id,
+        ):
+            await db.rollback()
+            return
+        await db.commit()
+
+    get_file_payload = await _tg_call(
+        tg_client,
+        settings=settings,
+        method="getFile",
+        payload={"file_id": file_id},
+    )
+    file_path = get_file_payload.get("file_path")
+    if not isinstance(file_path, str) or not file_path:
+        raise RuntimeError("Telegram getFile did not return file_path")
+
+    file_response = await tg_client.get(
+        f"https://api.telegram.org/file/bot{settings.bot_token}/{file_path}",
+        timeout=60.0,
+    )
+    file_response.raise_for_status()
+    file_bytes = file_response.content
+    if not file_bytes:
+        raise RuntimeError("Downloaded Telegram document is empty")
+
+    safe_name = _safe_filename(file_name)
+    key = (
+        f"workspaces/{binding.workspace_id}/telegram/{chat_id}/"
+        f"{file_unique_id}-{safe_name}"
+    )
+    uri = await object_store.put_bytes(
+        key=key,
+        body=file_bytes,
+        content_type=mime_type,
+    )
+
+    user_text = text or f"[document] {file_name}"
+    assistant_text = (
+        "Документ сохранён в объектное хранилище.\n"
+        f"File: {file_name}\n"
+        f"Size: {len(file_bytes)} bytes\n"
+        f"URI: {uri}"
+    )
+    metadata = {
+        "channel": "telegram",
+        "telegram_chat_id": chat_id,
+        "telegram_message_id": message_id,
+        "telegram_update_id": update_id,
+        "telegram_username": username,
+        "telegram_document_file_id": file_id,
+        "telegram_document_file_name": file_name,
+        "telegram_document_mime_type": mime_type,
+        "telegram_document_uri": uri,
+    }
+    await _persist_direct_telegram_exchange(
+        session_id=binding.session_id,
+        user_text=user_text,
+        assistant_text=assistant_text,
+        metadata=metadata,
+    )
+    await _tg_send_text(
+        tg_client,
+        settings=settings,
+        chat_id=chat_id,
+        text=assistant_text,
+    )
+
+    async with async_session_factory() as db:
+        binding_after = await get_binding_by_chat_id(db, chat_id=chat_id)
+        if binding_after is not None:
+            accepted = await mark_update_processed(
+                db,
+                binding=binding_after,
+                incoming_update_id=update_id,
+            )
+            if accepted:
+                await db.commit()
+            else:
+                await db.rollback()
+
+
 async def _handle_update(
     tg_client: httpx.AsyncClient,
     kragen_client: httpx.AsyncClient,
@@ -667,8 +822,8 @@ async def _handle_update(
     chat = message.get("chat")
     if not isinstance(chat, dict):
         return
-    text = message.get("text")
-    if not isinstance(text, str):
+    text, document = _extract_message_payload(message)
+    if text is None and document is None:
         return
 
     chat_id_val = chat.get("id")
@@ -695,7 +850,7 @@ async def _handle_update(
         first_name = str(first_name_value) if first_name_value is not None else None
         last_name = str(last_name_value) if last_name_value is not None else None
 
-    command = text.strip().lower()
+    command = text.strip().lower() if isinstance(text, str) else ""
     async with async_session_factory() as db:
         claimed = await claim_message_processing(
             db,
@@ -771,18 +926,32 @@ async def _handle_update(
                 await db.commit()
             return
 
-        await _handle_user_text(
-            tg_client,
-            kragen_client,
-            settings=settings,
-            update_id=update_id,
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-        )
+        if document is not None:
+            await _handle_user_document(
+                tg_client,
+                settings=settings,
+                update_id=update_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                document=document,
+                text=text,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+        elif text is not None:
+            await _handle_user_text(
+                tg_client,
+                kragen_client,
+                settings=settings,
+                update_id=update_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
         async with async_session_factory() as db:
             await mark_message_status(
                 db,
@@ -970,22 +1139,29 @@ async def _webhook_worker(
 
 
 async def _dedup_cleanup_worker(*, settings: TelegramChannelSettings) -> None:
-    """Periodically purge old telegram_processed_messages rows."""
+    """Periodically reap stuck ``processing`` rows and purge old dedup records."""
     interval = max(60, settings.dedup_cleanup_interval_seconds)
     retention = max(1, settings.dedup_retention_hours)
+    processing_timeout = max(1, settings.dedup_processing_timeout_minutes)
     while True:
         try:
             async with async_session_factory() as db:
+                reaped = await reap_stuck_processing_messages(
+                    db,
+                    older_than_minutes=processing_timeout,
+                )
                 deleted = await cleanup_processed_messages(
                     db,
                     older_than_hours=retention,
                 )
                 await db.commit()
-                if deleted > 0:
+                if reaped > 0 or deleted > 0:
                     logger.info(
                         "telegram_dedup_cleanup",
+                        reaped=reaped,
                         deleted=deleted,
                         retention_hours=retention,
+                        processing_timeout_minutes=processing_timeout,
                     )
         except Exception:  # noqa: BLE001
             logger.exception("telegram_dedup_cleanup_failed")
