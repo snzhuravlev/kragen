@@ -15,6 +15,8 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import aioboto3
+from botocore.config import Config
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +28,7 @@ from kragen.services import task_stream
 from kragen.services.audit_service import write_audit
 
 logger = get_logger(__name__)
+_S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
 
 
 def _format_exception_for_user(exc: BaseException) -> str:
@@ -123,6 +126,7 @@ def _build_prompt(
     context_messages: list[Message],
     user_message: str,
     memory_context: str,
+    runtime_checks_context: str,
     memory_load_failed: bool = False,
 ) -> str:
     """Build a compact prompt from recent session history."""
@@ -151,6 +155,8 @@ def _build_prompt(
         f"Session ID: {session_id}\n"
         "Long-term memory context:\n"
         f"{memory_block}\n\n"
+        "Runtime checks (host-side):\n"
+        f"{runtime_checks_context.strip() or 'No host runtime checks were requested for this message.'}\n\n"
         "Recent context:\n"
         f"{history}\n\n"
         "Current user request:\n"
@@ -400,6 +406,65 @@ async def _load_long_term_memory_context(
     return "\n".join(lines), False
 
 
+def _looks_like_storage_check_query(text: str) -> bool:
+    """Return True when user asks to verify storage/MinIO reachability."""
+    lowered = text.lower()
+    markers = (
+        "minio",
+        "s3",
+        "object storage",
+        "storage",
+        "bucket",
+        "сторедж",
+        "хранилищ",
+        "минио",
+        "бакет",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+async def _load_storage_runtime_context() -> str:
+    """
+    Run storage checks from the API host and return text for prompt injection.
+
+    This avoids misleading answers when the worker runtime sandbox cannot reach
+    localhost services directly.
+    """
+    s = _settings().storage
+    lines: list[str] = [
+        "Storage check source: Kragen API host runtime (not worker sandbox).",
+        f"Configured endpoint: {s.endpoint_url}",
+        f"Configured bucket: {s.bucket}",
+    ]
+    session = aioboto3.Session()
+    try:
+        async with session.client(
+            "s3",
+            endpoint_url=s.endpoint_url,
+            aws_access_key_id=s.access_key,
+            aws_secret_access_key=s.secret_key,
+            region_name="us-east-1",
+            config=_S3_PATH_STYLE_CONFIG,
+        ) as client:
+            try:
+                await asyncio.wait_for(client.head_bucket(Bucket=s.bucket), timeout=6.0)
+                lines.append("head_bucket: ok")
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"head_bucket: error ({type(exc).__name__}: {exc})")
+
+            try:
+                response = await asyncio.wait_for(client.list_buckets(), timeout=6.0)
+                names = [b.get("Name") for b in response.get("Buckets", []) if isinstance(b, dict)]
+                lines.append(f"list_buckets: ok ({len(names)} bucket(s))")
+                if names:
+                    lines.append("buckets: " + ", ".join(str(name) for name in names[:20]))
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"list_buckets: error ({type(exc).__name__}: {exc})")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"storage_client_init: error ({type(exc).__name__}: {exc})")
+    return "\n".join(lines)
+
+
 async def run_cursor_worker(
     *,
     db: AsyncSession,
@@ -442,6 +507,7 @@ async def run_cursor_worker(
                 break
         memory_context = ""
         memory_load_failed = False
+        runtime_checks_context = ""
         if _settings().worker.memory_context_enabled:
             top_k = max(1, min(_settings().worker.memory_top_k, 12))
             memory_context, memory_load_failed = await _load_long_term_memory_context(
@@ -470,11 +536,17 @@ async def run_cursor_worker(
                 )
         else:
             await _phase(tid, "Long-term memory injection is disabled in config.")
+
+        if user_message and _looks_like_storage_check_query(user_message):
+            await _phase(tid, "Running storage health checks from API host runtime…")
+            runtime_checks_context = await _load_storage_runtime_context()
+            await _phase(tid, "Storage runtime checks completed and injected into prompt.")
         prompt = _build_prompt(
             session_id=session_id,
             context_messages=recent,
             user_message=user_message,
             memory_context=memory_context,
+            runtime_checks_context=runtime_checks_context,
             memory_load_failed=memory_load_failed,
         )
         ws_path = _workspace_path(workspace_id)

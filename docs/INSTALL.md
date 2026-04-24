@@ -181,6 +181,12 @@ API base URL: `KRAGEN_API_URL` (default `http://127.0.0.1:8000`).
 
 Primary file: `**configs/kragen.yaml**`. Overrides: variables with prefix `**KRAGEN_**` and nested keys via `**__**`, e.g. `KRAGEN_DATABASE__URL`, `KRAGEN_AUTH__DISABLED`. Optional `**.env**` in the project root.
 
+Recommended layout:
+
+- keep placeholders/defaults in `configs/kragen.yaml`,
+- keep real secrets in system environment (for example `/etc/kragen/kragen-service.env`),
+- keep `.env` for local developer convenience only.
+
 Alternate YAML path: `**KRAGEN_CONFIG_FILE=/absolute/path/kragen.yaml**`. The Web UI’s YAML viewer resolves the same path as the running API process.
 
 ### Telegram adapter test section in YAML
@@ -201,6 +207,9 @@ telegram_channel:
 
 Adapter runtime reads `KRAGEN_TELEGRAM_*` environment variables first. When a
 variable is missing, it falls back to `telegram_channel.*` from `kragen.yaml`.
+
+For operation and incident runbooks (Telegram 409/403, MinIO credential issues,
+systemd recovery), see `docs/OPERATIONS.md`.
 
 ### Cursor long-term memory (memory-mcp)
 

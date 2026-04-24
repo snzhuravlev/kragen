@@ -15,13 +15,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import aioboto3
 import httpx
 import uvicorn
+from botocore.config import Config
 from fastapi import FastAPI, HTTPException, Request
 
 from kragen.config import get_settings as get_kragen_settings
 from kragen.db.session import async_session_factory
 from kragen.logging_config import configure_logging, get_logger
+from kragen.models.core import Message
 from kragen.services.telegram_bindings import (
     claim_message_processing,
     cleanup_processed_messages,
@@ -37,6 +40,7 @@ logger = get_logger(__name__)
 
 _TELEGRAM_MESSAGE_MAX = 4096
 _STREAM_EDIT_INTERVAL_SECONDS = 1.0
+_S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
 
 
 @dataclass(frozen=True)
@@ -280,6 +284,91 @@ def _health_payload(settings: TelegramChannelSettings) -> dict[str, str]:
     }
 
 
+def _looks_like_storage_check_query(text: str) -> bool:
+    """Return True when user asks to check MinIO/S3 storage status."""
+    lowered = text.lower()
+    markers = (
+        "minio",
+        "s3",
+        "object storage",
+        "storage",
+        "store",
+        "bucket",
+        "сторедж",
+        "сторейдж",
+        "сторадж",
+        "хранилищ",
+        "минио",
+        "бакет",
+        "записать",
+    )
+    return any(marker in lowered for marker in markers)
+
+
+async def _build_storage_check_reply() -> str:
+    """Run storage checks from host runtime and return user-facing report."""
+    cfg = get_kragen_settings().storage
+    lines: list[str] = [
+        "Storage check source: kragen-telegram-channel host runtime.",
+        f"Endpoint: {cfg.endpoint_url}",
+        f"Bucket: {cfg.bucket}",
+    ]
+    session = aioboto3.Session()
+    async with session.client(
+        "s3",
+        endpoint_url=cfg.endpoint_url,
+        aws_access_key_id=cfg.access_key,
+        aws_secret_access_key=cfg.secret_key,
+        region_name="us-east-1",
+        config=_S3_PATH_STYLE_CONFIG,
+    ) as client:
+        try:
+            await asyncio.wait_for(client.head_bucket(Bucket=cfg.bucket), timeout=6.0)
+            lines.append("head_bucket: OK")
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"head_bucket: ERROR ({type(exc).__name__}: {exc})")
+        try:
+            result = await asyncio.wait_for(client.list_buckets(), timeout=6.0)
+            names = [b.get("Name") for b in result.get("Buckets", []) if isinstance(b, dict)]
+            lines.append(f"list_buckets: OK ({len(names)} bucket(s))")
+            if names:
+                lines.append("Buckets: " + ", ".join(str(name) for name in names[:20]))
+        except Exception as exc:  # noqa: BLE001
+            lines.append(f"list_buckets: ERROR ({type(exc).__name__}: {exc})")
+    return "\n".join(lines)
+
+
+async def _persist_direct_telegram_exchange(
+    *,
+    session_id: uuid.UUID,
+    user_text: str,
+    assistant_text: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Persist direct adapter reply flow so Web and Telegram stay in sync."""
+    async with async_session_factory() as db:
+        db.add(
+            Message(
+                session_id=session_id,
+                role="user",
+                content=user_text,
+                metadata_=metadata,
+            )
+        )
+        db.add(
+            Message(
+                session_id=session_id,
+                role="assistant",
+                content=assistant_text,
+                metadata_={
+                    "channel": "telegram",
+                    "source": "telegram_adapter_direct_check",
+                },
+            )
+        )
+        await db.commit()
+
+
 def _is_valid_webhook_secret(
     *,
     configured_secret: str | None,
@@ -450,6 +539,30 @@ async def _handle_user_text(
         "telegram_update_id": update_id,
         "telegram_username": username,
     }
+
+    if _looks_like_storage_check_query(text):
+        reply = await _build_storage_check_reply()
+        await _persist_direct_telegram_exchange(
+            session_id=binding.session_id,
+            user_text=text,
+            assistant_text=reply,
+            metadata=metadata,
+        )
+        await _tg_send_text(tg_client, settings=settings, chat_id=chat_id, text=reply)
+        async with async_session_factory() as db:
+            binding_after = await get_binding_by_chat_id(db, chat_id=chat_id)
+            if binding_after is not None:
+                accepted = await mark_update_processed(
+                    db,
+                    binding=binding_after,
+                    incoming_update_id=update_id,
+                )
+                if accepted:
+                    await db.commit()
+                else:
+                    await db.rollback()
+        return
+
     processing_message_id = await _tg_send_processing_stub(
         tg_client,
         settings=settings,

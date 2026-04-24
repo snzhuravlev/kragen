@@ -13,6 +13,7 @@ Long-term memory for Cursor is provided through `mcp_servers/memory_mcp`, backed
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture and data flow             |
 | [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | Python and external dependencies       |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)     | Configuration, migrations, production  |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md)     | Detailed runbooks and troubleshooting  |
 | [docs/PLUGINS.md](docs/PLUGINS.md)           | Plugin contract (skills, MCP, routers) |
 
 

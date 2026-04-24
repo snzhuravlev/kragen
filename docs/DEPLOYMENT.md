@@ -1,8 +1,12 @@
 # Deploying Kragen
 
+This guide describes recommended deployment patterns for Kragen API, Telegram
+adapter, and object storage integration. For day-2 troubleshooting runbooks,
+see `docs/OPERATIONS.md`.
+
 ## Configuration
 
-1. **Primary file**: `configs/kragen.yaml` — copy and adjust per environment; avoid committing production secrets in plain text.
+1. **Primary file**: `configs/kragen.yaml` — keep non-secret defaults and placeholders only.
 2. **Environment variables**: prefix `KRAGEN_`, nesting via `__`, for example:
    - `KRAGEN_DATABASE__URL`
    - `KRAGEN_STORAGE__ENDPOINT_URL`, `KRAGEN_STORAGE__ACCESS_KEY`, `KRAGEN_STORAGE__SECRET_KEY`, `KRAGEN_STORAGE__BUCKET`
@@ -11,6 +15,17 @@
 4. **YAML path override**: `KRAGEN_CONFIG_FILE=/absolute/path/kragen.yaml` when needed.
 
 Precedence on conflicting keys (highest wins): process arguments → environment variables → `.env` → YAML.
+
+### Recommended secret layout
+
+Use a strict separation:
+
+- `configs/kragen.yaml`: safe defaults, no real secrets.
+- `/etc/kragen/kragen-service.env`: real runtime secrets for systemd.
+- repository `.env`: local development convenience only.
+
+If both `.env` and systemd env define the same key, systemd process environment
+wins.
 
 ## Migrations before first run
 
@@ -21,6 +36,40 @@ alembic upgrade head
 ```
 
 Ensure the database URL is available to the process (YAML or `KRAGEN_DATABASE__URL`).
+
+## Runtime profiles
+
+### Local workstation + systemd
+
+This profile is optimized for one host that runs:
+
+- PostgreSQL
+- MinIO
+- Kragen API + Telegram adapter via one unit (`kragen-service`)
+
+Required files:
+
+- `/etc/systemd/system/kragen-service.service`
+- `/etc/kragen/kragen-service.env`
+
+Example `/etc/kragen/kragen-service.env` (replace placeholders):
+
+```bash
+KRAGEN_AUTH__DISABLED=false
+KRAGEN_DATABASE__URL=postgresql+asyncpg://kragen:CHANGE_ME@127.0.0.1:5432/kragen
+KRAGEN_STORAGE__ENDPOINT_URL=http://127.0.0.1:9000
+KRAGEN_STORAGE__ACCESS_KEY=CHANGE_ME
+KRAGEN_STORAGE__SECRET_KEY=CHANGE_ME
+KRAGEN_STORAGE__BUCKET=kragen
+KRAGEN_TELEGRAM_BOT_TOKEN=1234567890:TEST_BOT_TOKEN_REPLACE_ME
+KRAGEN_TELEGRAM_API_BASE_URL=http://127.0.0.1:8000
+KRAGEN_TELEGRAM_AUTH_USER_ID=00000000-0000-0000-0000-000000001111
+KRAGEN_TELEGRAM_DEFAULT_WORKSPACE_ID=00000000-0000-0000-0000-000000001111
+KRAGEN_TELEGRAM_MODE=polling
+```
+
+Operational requirement: do not run extra manual adapter/API processes when
+systemd unit is active.
 
 ## Application process
 
@@ -47,6 +96,18 @@ For the current MVP, **one** worker is recommended because task SSE is in-memory
 ## Object storage
 
 Ensure the bucket from `storage.bucket` exists or that the process may create it (see `ensure_bucket_exists` in code).
+
+### MinIO compatibility notes
+
+Kragen storage client is configured for S3 path-style requests, which improves
+compatibility with local MinIO deployments.
+
+When startup logs show `InvalidAccessKeyId`:
+
+1. verify MinIO credentials source (for example `/etc/default/minio`),
+2. verify Kragen storage env keys match exactly,
+3. restart `kragen-service`,
+4. re-check logs.
 
 ## systemd (example)
 
@@ -175,6 +236,14 @@ Behavior:
 - if either child crashes, the parent stops the other child and exits non-zero;
 - on service stop/restart, both children are terminated together.
 
+### Important runtime guardrails
+
+- Keep `KRAGEN_AUTH__DISABLED=false` in service runtime for Telegram Bearer auth.
+- Ensure `KRAGEN_TELEGRAM_AUTH_USER_ID` and
+  `KRAGEN_TELEGRAM_DEFAULT_WORKSPACE_ID` are valid DB UUIDs.
+- Run only one polling adapter instance per bot token to avoid Telegram
+  `409 Conflict`.
+
 Repository template:
 
 - `scripts/systemd/kragen-service.service`
@@ -199,6 +268,27 @@ The unit loads optional overrides from:
 The leading `-` means the file is optional; if absent, startup still works and
 settings fall back to `kragen.yaml`.
 
+### Recommended enablement flow
+
+```bash
+sudo mkdir -p /etc/kragen
+sudo cp scripts/systemd/kragen-service.service /etc/systemd/system/kragen-service.service
+sudo cp scripts/systemd/kragen-service.env /etc/kragen/kragen-service.env
+sudo nano /etc/kragen/kragen-service.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now kragen-service
+sudo systemctl status kragen-service --no-pager
+```
+
+### Post-start validation
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+journalctl -u kragen-service -n 80 --no-pager
+```
+
+In healthy polling mode you should see repeated `getUpdates ... 200 OK` lines.
+
 ## Upgrading
 
 ```bash
@@ -211,3 +301,12 @@ systemctl restart kragen   # or your process manager
 ## Monitoring and logs
 
 The app writes structured logs to stdout. Collect them with your infrastructure (journald, container log driver, Kubernetes agent). Prometheus metrics and OpenTelemetry tracing are **not** bundled in the application; add them via middleware or sidecars if needed.
+
+### High-value log patterns
+
+- `telegram_channel_start` — adapter boot completed.
+- `telegram_http_error` + `409 Conflict` — duplicate polling consumers.
+- `telegram_update_handle_failed` + `403 Forbidden` — auth/user mismatch for session posting.
+- `object_storage_bucket_init_failed` — MinIO/S3 credentials or connectivity issue.
+
+See `docs/OPERATIONS.md` for precise diagnosis and fixes for each pattern.
