@@ -24,6 +24,9 @@ dependencies = [
   "pgvector>=0.3.6",
   "aioboto3>=13.0.0",
   "mcp>=1.1.0",
+  "redis>=5.0.0",
+  "jsonschema>=4.23.0",
+  "PyJWT[crypto]>=2.9.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +44,7 @@ kragen-api = "kragen.api.main:run"
 agentctl = "kragen.cli.agentctl:main"
 kragen-telegram-channel = "kragen.channels.telegram_adapter:main"
 kragen-service = "kragen.cli.service_runner:main"
+kragen-worker = "kragen.worker:main"
 
 # Built-in plugins exposed through the same entry-point group that third-party
 # plugins use. External packages register themselves with their own pyproject

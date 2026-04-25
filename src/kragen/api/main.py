@@ -1,5 +1,6 @@
 """FastAPI application entrypoint."""
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -28,6 +29,8 @@ from kragen.config import get_settings
 from kragen.db.session import engine
 from kragen.logging_config import configure_logging, get_logger
 from kragen.plugins.manager import get_plugin_manager
+from kragen.services import task_stream
+from kragen.services.task_reaper import run_task_reaper
 from kragen.storage import object_store
 
 logger = get_logger(__name__)
@@ -49,6 +52,7 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
     """Startup: object storage + plugins; shutdown: plugins, then dispose DB pool."""
+    task_reaper_task = asyncio.create_task(run_task_reaper(), name="kragen-task-reaper")
     try:
         await object_store.ensure_bucket_exists()
     except Exception as exc:
@@ -64,6 +68,11 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
         await get_plugin_manager().shutdown()
     except Exception as exc:  # noqa: BLE001
         logger.warning("plugin_manager_shutdown_failed", error=str(exc))
+    task_reaper_task.cancel()
+    try:
+        await task_reaper_task
+    except asyncio.CancelledError:
+        pass
     await engine.dispose()
 
 
@@ -71,6 +80,7 @@ def create_app() -> FastAPI:
     """Build FastAPI app with all routers."""
     settings = get_settings()
     configure_logging(settings.app.log_level)
+    task_stream.configure_from_settings()
 
     app = FastAPI(
         title=settings.app.name,

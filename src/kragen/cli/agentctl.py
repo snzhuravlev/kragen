@@ -19,7 +19,7 @@ def _base_url() -> str:
 def _headers() -> dict[str, str]:
     token = os.environ.get("KRAGEN_TOKEN", "")
     if not token:
-        print("Set KRAGEN_TOKEN to a user UUID (or enable AUTH_DISABLED on server).", file=sys.stderr)
+        print("Set KRAGEN_TOKEN to a JWT/OIDC token or dev UUID bearer.", file=sys.stderr)
         sys.exit(1)
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 

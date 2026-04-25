@@ -38,6 +38,10 @@ def test_is_stale_telegram_update() -> None:
     assert is_stale_telegram_update(last_update_id=10, incoming_update_id=10) is True
     assert is_stale_telegram_update(last_update_id=10, incoming_update_id=9) is True
     assert is_stale_telegram_update(last_update_id=10, incoming_update_id=11) is False
+    assert (
+        is_stale_telegram_update(last_update_id=209_999_996, incoming_update_id=103_697_736)
+        is False
+    )
 
 
 @pytest.mark.asyncio

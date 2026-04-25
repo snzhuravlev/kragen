@@ -12,6 +12,7 @@ from kragen.plugins.base import (
     SkillSpec,
 )
 from kragen.plugins.context import PluginContext
+from kragen.plugins.errors import PluginConfigError
 from kragen.plugins.manager import PluginManager
 
 
@@ -47,7 +48,12 @@ class _StubPlugin(BasePlugin):
         )
 
 
-def _make_manager_with_plugin(plugin: BasePlugin) -> PluginManager:
+def _make_manager_with_plugin(
+    plugin: BasePlugin,
+    *,
+    config: dict[str, object] | None = None,
+    enabled: bool = True,
+) -> PluginManager:
     """Bypass entry-point discovery: inject a record directly."""
     manager = PluginManager()
     from kragen.plugins.manager import _PluginRecord
@@ -55,8 +61,8 @@ def _make_manager_with_plugin(plugin: BasePlugin) -> PluginManager:
     record = _PluginRecord(
         manifest=plugin.manifest,
         instance=plugin,
-        config={},
-        enabled=True,
+        config=dict(config or {}),
+        enabled=enabled,
         ep_name="test",
         dist_name=None,
     )
@@ -128,3 +134,77 @@ def test_mention_trigger_only_on_match() -> None:
     assert manager.active_skills(user_message="how is the weather") == []
     skills = manager.active_skills(user_message="Check my JIRA ticket please")
     assert [s.id for s in skills] == ["jira"]
+
+
+def test_config_schema_rejects_bad_plugin_config() -> None:
+    plugin = BasePlugin(
+        PluginManifest(
+            id="kragen-schema",
+            version="0.0.1",
+            kind="skill",
+            config_schema={
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "required": ["mode"],
+                "additionalProperties": False,
+            },
+        )
+    )
+
+    try:
+        PluginManager._validate_plugin_config(plugin.manifest, {"mode": 123})
+    except PluginConfigError as exc:
+        assert "Invalid config for plugin 'kragen-schema'" in str(exc)
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("expected PluginConfigError")
+
+
+def test_missing_required_plugin_disables_plugin() -> None:
+    class _RequiresPlugin(BasePlugin):
+        def __init__(self) -> None:
+            super().__init__(
+                PluginManifest(
+                    id="kragen-needs-other",
+                    version="0.0.1",
+                    kind="skill",
+                    requires=["kragen-other"],
+                )
+            )
+
+        def setup(self, ctx: PluginContext) -> None:
+            ctx.register_skill(SkillSpec(id="needs-other", title="Needs", prompt="NEEDS"))
+
+    manager = _make_manager_with_plugin(_RequiresPlugin())
+    record = manager.get_plugin("kragen-needs-other")
+
+    assert record["enabled"] is False
+    assert "missing required enabled plugin" in record["setup_error"]
+
+
+def test_duplicate_skill_id_across_plugins_disables_second_plugin() -> None:
+    class _SkillPlugin(BasePlugin):
+        def __init__(self, plugin_id: str) -> None:
+            super().__init__(PluginManifest(id=plugin_id, version="0.0.1", kind="skill"))
+
+        def setup(self, ctx: PluginContext) -> None:
+            ctx.register_skill(SkillSpec(id="shared-skill", title="Shared", prompt="SHARED"))
+
+    manager = PluginManager()
+    from kragen.plugins.manager import _PluginRecord
+
+    for plugin in (_SkillPlugin("kragen-first"), _SkillPlugin("kragen-second")):
+        manager._records[plugin.manifest.id] = _PluginRecord(
+            manifest=plugin.manifest,
+            instance=plugin,
+            config={},
+            enabled=True,
+            ep_name="test",
+            dist_name=None,
+        )
+
+    manager._run_setup_for_enabled()
+
+    assert manager.get_plugin("kragen-first")["enabled"] is True
+    second = manager.get_plugin("kragen-second")
+    assert second["enabled"] is False
+    assert "already registered by plugin 'kragen-first'" in second["setup_error"]

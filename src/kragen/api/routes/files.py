@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select
 
-from kragen.api.deps import CorrelationId, DbSession, UserId
+from kragen.api.deps import CorrelationId, DbSession, UserId, ensure_workspace_access
 from kragen.api.schemas import ArtifactOut, DocumentOut
 from kragen.models.core import Artifact
 from kragen.models.memory import Document
@@ -24,6 +24,8 @@ async def upload_file(
     file: UploadFile = File(...),
 ) -> Document:
     """Store raw bytes in object storage and register a document row (ingestion follows async)."""
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=workspace_id)
+
     data = await file.read()
     digest = object_store.sha256_hex(data)
     key = f"workspaces/{workspace_id}/documents/{digest}"
@@ -65,8 +67,7 @@ async def get_artifact(artifact_id: uuid.UUID, db: DbSession, user_id: UserId) -
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    # Ownership: workspace-level RBAC to be enforced via policy service
-    _ = user_id
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=row.workspace_id)
     return row
 
 
@@ -77,5 +78,5 @@ async def get_document(document_id: uuid.UUID, db: DbSession, user_id: UserId) -
     row = result.scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    _ = user_id
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=row.workspace_id)
     return row

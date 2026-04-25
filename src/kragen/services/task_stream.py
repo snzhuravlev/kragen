@@ -12,6 +12,7 @@ from typing import AsyncIterator
 
 from kragen.services.task_stream_backends import (
     InMemoryTaskStreamBackend,
+    RedisTaskStreamBackend,
     TaskStreamBackend,
 )
 
@@ -27,6 +28,24 @@ def set_backend(backend: TaskStreamBackend) -> None:
     """Override the active backend (for tests or alternative transports)."""
     global _backend
     _backend = backend
+
+
+def configure_from_settings() -> TaskStreamBackend:
+    """Configure the active backend from application settings."""
+    from kragen.config import get_settings
+
+    settings = get_settings().task_stream
+    if settings.backend == "redis":
+        backend: TaskStreamBackend = RedisTaskStreamBackend(
+            redis_url=settings.redis_url,
+            redis_prefix=settings.redis_prefix,
+            ttl_seconds=settings.ttl_seconds,
+            block_timeout_ms=settings.block_timeout_ms,
+        )
+    else:
+        backend = InMemoryTaskStreamBackend()
+    set_backend(backend)
+    return backend
 
 
 def register_task(task_id: str) -> None:

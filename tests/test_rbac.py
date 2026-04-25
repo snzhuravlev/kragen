@@ -7,10 +7,11 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from kragen.api.deps import is_admin_user
+from kragen.api.deps import _decode_jwt_user_id, is_admin_user
 from kragen.api.routes.admin import _mask_dsn_password, _mask_sensitive_yaml
-from kragen.config import get_settings
+from kragen.config import KragenSettings, get_settings
 
 
 class _Stub:
@@ -96,3 +97,47 @@ def test_config_has_admin_user_ids_field() -> None:
 )
 def test_mask_dsn_password_noop_for_non_dsn(dsn: str) -> None:
     assert _mask_dsn_password(dsn) == "***masked***"
+
+
+def test_prod_config_rejects_dev_auth_and_wildcard_bind() -> None:
+    with pytest.raises(ValidationError, match="Invalid production configuration"):
+        KragenSettings(
+            app={"environment": "prod"},
+            api={"host": "0.0.0.0"},
+            database={"url": "postgresql+asyncpg://kragen:secret@127.0.0.1:5432/kragen"},
+            auth={
+                "disabled": True,
+                "dev_user_id": "11111111-1111-1111-1111-111111111111",
+                "jwt_secret": "change-me-in-production",
+            },
+        )
+
+
+def test_prod_config_allows_localhost_bind_with_real_secret() -> None:
+    settings = KragenSettings(
+        app={"environment": "prod"},
+        api={"host": "127.0.0.1"},
+        database={"url": "postgresql+asyncpg://kragen:secret@127.0.0.1:5432/kragen"},
+        auth={
+            "disabled": False,
+            "jwt_secret": "not-the-default-secret",
+            "dev_user_id": None,
+            "raw_uuid_bearer_enabled": False,
+        },
+    )
+
+    assert settings.api.host == "127.0.0.1"
+
+
+def test_decode_jwt_user_id_uses_subject_uuid() -> None:
+    jwt = pytest.importorskip("jwt")
+    user_id = uuid.uuid4()
+    secret = "a-production-length-test-secret-value"
+    token = jwt.encode({"sub": str(user_id)}, secret, algorithm="HS256")
+    settings = KragenSettings(
+        database={"url": "postgresql+asyncpg://kragen:secret@127.0.0.1:5432/kragen"},
+        auth={"jwt_secret": secret},
+    )
+
+    with patch("kragen.api.deps.get_settings", return_value=settings):
+        assert _decode_jwt_user_id(token) == user_id

@@ -44,6 +44,7 @@ def test_health_payload() -> None:
     settings = TelegramChannelSettings(
         bot_token="token",
         kragen_api_base_url="http://127.0.0.1:8000",
+        api_bearer_token=None,
         auth_user_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
         default_workspace_id=uuid.UUID("00000000-0000-0000-0000-000000000002"),
         mode="webhook",

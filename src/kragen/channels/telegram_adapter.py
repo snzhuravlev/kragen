@@ -10,10 +10,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
 
 import aioboto3
@@ -22,6 +20,23 @@ import uvicorn
 from botocore.config import Config
 from fastapi import FastAPI, HTTPException, Request
 
+from kragen.channels.telegram_api import (
+    tg_call as _tg_call,
+    tg_edit_text as _tg_edit_text,
+    tg_get_updates as _tg_get_updates,
+    tg_send_processing_stub as _tg_send_processing_stub,
+    tg_send_text as _tg_send_text,
+    tg_set_webhook as _tg_set_webhook,
+)
+from kragen.channels.telegram_settings import TelegramChannelSettings, read_settings
+from kragen.channels.telegram_utils import (
+    extract_message_payload as _extract_message_payload,
+    headers as _headers,
+    health_payload as _health_payload,
+    looks_like_storage_check_query as _looks_like_storage_check_query,
+    safe_filename as _safe_filename,
+    split_telegram_message as _split_telegram_message,
+)
 from kragen.config import get_settings as get_kragen_settings
 from kragen.db.session import async_session_factory
 from kragen.logging_config import configure_logging, get_logger
@@ -41,305 +56,13 @@ from kragen.storage import object_store
 
 logger = get_logger(__name__)
 
-_TELEGRAM_MESSAGE_MAX = 4096
 _STREAM_EDIT_INTERVAL_SECONDS = 1.0
 _S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
 
 
-@dataclass(frozen=True)
-class TelegramChannelSettings:
-    """Runtime settings for Telegram channel adapter."""
-
-    bot_token: str
-    kragen_api_base_url: str
-    auth_user_id: uuid.UUID
-    default_workspace_id: uuid.UUID
-    poll_timeout_seconds: int = 20
-    loop_delay_seconds: float = 0.4
-    task_poll_interval_seconds: float = 1.0
-    task_wait_timeout_seconds: int = 300
-    mode: str = "polling"
-    webhook_host: str = "0.0.0.0"
-    webhook_port: int = 8081
-    webhook_path: str = "/telegram/webhook"
-    webhook_public_url: str | None = None
-    webhook_secret_token: str | None = None
-    dedup_retention_hours: int = 168
-    dedup_cleanup_interval_seconds: int = 3600
-    dedup_processing_timeout_minutes: int = 30
-
-    @property
-    def telegram_api_base(self) -> str:
-        return f"https://api.telegram.org/bot{self.bot_token}"
-
-
 def _read_settings() -> TelegramChannelSettings:
     """Read settings from environment variables."""
-    yaml_cfg = get_kragen_settings().telegram_channel
-
-    token = os.environ.get("KRAGEN_TELEGRAM_BOT_TOKEN", yaml_cfg.bot_token).strip()
-    if not token:
-        raise RuntimeError("KRAGEN_TELEGRAM_BOT_TOKEN is required")
-
-    api_base = os.environ.get("KRAGEN_TELEGRAM_API_BASE_URL", yaml_cfg.api_base_url).strip()
-    auth_user = os.environ.get("KRAGEN_TELEGRAM_AUTH_USER_ID", yaml_cfg.auth_user_id).strip()
-    workspace = os.environ.get(
-        "KRAGEN_TELEGRAM_DEFAULT_WORKSPACE_ID", yaml_cfg.default_workspace_id
-    ).strip()
-    if not auth_user:
-        raise RuntimeError("KRAGEN_TELEGRAM_AUTH_USER_ID is required")
-    if not workspace:
-        raise RuntimeError("KRAGEN_TELEGRAM_DEFAULT_WORKSPACE_ID is required")
-
-    return TelegramChannelSettings(
-        bot_token=token,
-        kragen_api_base_url=api_base,
-        auth_user_id=uuid.UUID(auth_user),
-        default_workspace_id=uuid.UUID(workspace),
-        poll_timeout_seconds=int(
-            os.environ.get("KRAGEN_TELEGRAM_POLL_TIMEOUT_SECONDS", str(yaml_cfg.poll_timeout_seconds))
-        ),
-        loop_delay_seconds=float(
-            os.environ.get("KRAGEN_TELEGRAM_LOOP_DELAY_SECONDS", str(yaml_cfg.loop_delay_seconds))
-        ),
-        task_poll_interval_seconds=float(
-            os.environ.get(
-                "KRAGEN_TELEGRAM_TASK_POLL_INTERVAL_SECONDS",
-                str(yaml_cfg.task_poll_interval_seconds),
-            )
-        ),
-        task_wait_timeout_seconds=int(
-            os.environ.get(
-                "KRAGEN_TELEGRAM_TASK_WAIT_TIMEOUT_SECONDS",
-                str(yaml_cfg.task_wait_timeout_seconds),
-            )
-        ),
-        mode=os.environ.get("KRAGEN_TELEGRAM_MODE", yaml_cfg.mode).strip().lower(),
-        webhook_host=os.environ.get("KRAGEN_TELEGRAM_WEBHOOK_HOST", yaml_cfg.webhook_host).strip(),
-        webhook_port=int(os.environ.get("KRAGEN_TELEGRAM_WEBHOOK_PORT", str(yaml_cfg.webhook_port))),
-        webhook_path=os.environ.get("KRAGEN_TELEGRAM_WEBHOOK_PATH", yaml_cfg.webhook_path).strip(),
-        webhook_public_url=(
-            os.environ.get("KRAGEN_TELEGRAM_WEBHOOK_PUBLIC_URL", yaml_cfg.webhook_public_url or "").strip()
-            or None
-        ),
-        webhook_secret_token=(
-            os.environ.get(
-                "KRAGEN_TELEGRAM_WEBHOOK_SECRET_TOKEN",
-                yaml_cfg.webhook_secret_token or "",
-            ).strip()
-            or None
-        ),
-        dedup_retention_hours=int(
-            os.environ.get("KRAGEN_TELEGRAM_DEDUP_RETENTION_HOURS", str(yaml_cfg.dedup_retention_hours))
-        ),
-        dedup_cleanup_interval_seconds=int(
-            os.environ.get(
-                "KRAGEN_TELEGRAM_DEDUP_CLEANUP_INTERVAL_SECONDS",
-                str(yaml_cfg.dedup_cleanup_interval_seconds),
-            )
-        ),
-        dedup_processing_timeout_minutes=int(
-            os.environ.get(
-                "KRAGEN_TELEGRAM_DEDUP_PROCESSING_TIMEOUT_MINUTES",
-                str(yaml_cfg.dedup_processing_timeout_minutes),
-            )
-        ),
-    )
-
-
-def _split_telegram_message(text: str, max_len: int = _TELEGRAM_MESSAGE_MAX) -> list[str]:
-    """Split long text into Telegram-compatible chunks."""
-    normalized = text.strip()
-    if not normalized:
-        return ["(empty response)"]
-    if len(normalized) <= max_len:
-        return [normalized]
-
-    chunks: list[str] = []
-    start = 0
-    length = len(normalized)
-    while start < length:
-        end = min(start + max_len, length)
-        if end < length:
-            pivot = normalized.rfind("\n", start, end)
-            if pivot <= start:
-                pivot = normalized.rfind(" ", start, end)
-            if pivot > start:
-                end = pivot
-        piece = normalized[start:end].strip()
-        if piece:
-            chunks.append(piece)
-        start = end
-    return chunks or ["(empty response)"]
-
-
-async def _tg_call(
-    client: httpx.AsyncClient,
-    *,
-    settings: TelegramChannelSettings,
-    method: str,
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Call Telegram Bot API and return decoded payload."""
-    response = await client.post(
-        f"{settings.telegram_api_base}/{method}",
-        json=payload,
-        timeout=max(30.0, float(settings.poll_timeout_seconds) + 10.0),
-    )
-    response.raise_for_status()
-    data = response.json()
-    if not isinstance(data, dict) or not data.get("ok"):
-        raise RuntimeError(f"Telegram API {method} failed: {data}")
-    result = data.get("result")
-    if isinstance(result, dict):
-        return result
-    return {"result": result}
-
-
-async def _tg_get_updates(
-    client: httpx.AsyncClient,
-    *,
-    settings: TelegramChannelSettings,
-    offset: int | None,
-) -> list[dict[str, Any]]:
-    payload: dict[str, Any] = {
-        "timeout": settings.poll_timeout_seconds,
-        "allowed_updates": ["message"],
-    }
-    if offset is not None:
-        payload["offset"] = offset
-    resp = await _tg_call(client, settings=settings, method="getUpdates", payload=payload)
-    result = resp.get("result")
-    if isinstance(result, list):
-        return [x for x in result if isinstance(x, dict)]
-    return []
-
-
-async def _tg_send_text(
-    client: httpx.AsyncClient,
-    *,
-    settings: TelegramChannelSettings,
-    chat_id: int,
-    text: str,
-) -> None:
-    for chunk in _split_telegram_message(text):
-        await _tg_call(
-            client,
-            settings=settings,
-            method="sendMessage",
-            payload={
-                "chat_id": chat_id,
-                "text": chunk,
-                "disable_web_page_preview": True,
-            },
-        )
-
-
-async def _tg_edit_text(
-    client: httpx.AsyncClient,
-    *,
-    settings: TelegramChannelSettings,
-    chat_id: int,
-    message_id: int,
-    text: str,
-) -> None:
-    """Edit a Telegram message in-place (best effort)."""
-    chunk = _split_telegram_message(text)[0]
-    await _tg_call(
-        client,
-        settings=settings,
-        method="editMessageText",
-        payload={
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "text": chunk,
-            "disable_web_page_preview": True,
-        },
-    )
-
-
-async def _tg_send_processing_stub(
-    client: httpx.AsyncClient,
-    *,
-    settings: TelegramChannelSettings,
-    chat_id: int,
-) -> int | None:
-    """Send initial status message and return Telegram message id."""
-    resp = await _tg_call(
-        client,
-        settings=settings,
-        method="sendMessage",
-        payload={
-            "chat_id": chat_id,
-            "text": "Processing your request...",
-            "disable_web_page_preview": True,
-        },
-    )
-    message_id_val = resp.get("message_id")
-    if isinstance(message_id_val, int):
-        return message_id_val
-    return None
-
-
-def _headers(settings: TelegramChannelSettings) -> dict[str, str]:
-    return {"Authorization": f"Bearer {settings.auth_user_id}"}
-
-
-def _safe_filename(name: str | None) -> str:
-    """Return filename safe for object-storage key component."""
-    if not name:
-        return "file"
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", name.strip())
-    cleaned = cleaned.strip("._")
-    return cleaned or "file"
-
-
-def _extract_message_payload(message: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
-    """Extract text/caption and optional document payload from Telegram message."""
-    text_value = message.get("text")
-    text = str(text_value).strip() if isinstance(text_value, str) else None
-    if text == "":
-        text = None
-    if text is None:
-        caption_value = message.get("caption")
-        if isinstance(caption_value, str):
-            caption = caption_value.strip()
-            text = caption or None
-
-    document = message.get("document")
-    if not isinstance(document, dict):
-        return text, None
-    return text, document
-
-
-def _health_payload(settings: TelegramChannelSettings) -> dict[str, str]:
-    """Return static health payload for adapter HTTP probes."""
-    return {
-        "status": "ok",
-        "service": "kragen-telegram-channel",
-        "mode": settings.mode,
-    }
-
-
-def _looks_like_storage_check_query(text: str) -> bool:
-    """Return True when user asks to check MinIO/S3 storage status."""
-    lowered = text.lower()
-    markers = (
-        "minio",
-        "s3",
-        "object storage",
-        "storage",
-        "store",
-        "bucket",
-        "сторедж",
-        "сторейдж",
-        "сторадж",
-        "хранилищ",
-        "минио",
-        "бакет",
-        "записать",
-    )
-    return any(marker in lowered for marker in markers)
+    return read_settings()
 
 
 async def _build_storage_check_reply() -> str:
@@ -536,6 +259,36 @@ async def _handle_command_new(
         session = await start_new_chat_session(db, binding=binding)
         await db.commit()
     return f"Started a new session: `{session.id}`"
+
+
+async def _handle_command_whoami(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+) -> str:
+    """Return diagnostic identity info for the current Telegram chat binding."""
+    async with async_session_factory() as db:
+        binding = await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        await db.commit()
+    return (
+        "Telegram binding diagnostics:\n"
+        f"chat_id: `{binding.chat_id}`\n"
+        f"session_id: `{binding.session_id}`\n"
+        f"workspace_id: `{binding.workspace_id}`\n"
+        f"user_id: `{binding.user_id}`\n"
+        f"last_update_id: `{binding.last_update_id}`"
+    )
 
 
 async def _handle_user_text(
@@ -925,6 +678,33 @@ async def _handle_update(
                 )
                 await db.commit()
             return
+        if command == "/whoami":
+            message_text = await _handle_command_whoami(
+                settings=settings,
+                chat_id=chat_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            await _tg_send_text(tg_client, settings=settings, chat_id=chat_id, text=message_text)
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
 
         if document is not None:
             await _handle_user_document(
@@ -979,6 +759,32 @@ async def _handle_update(
         )
 
 
+async def _handle_update_with_timeout(
+    tg_client: httpx.AsyncClient,
+    kragen_client: httpx.AsyncClient,
+    *,
+    settings: TelegramChannelSettings,
+    update: dict[str, Any],
+) -> None:
+    """Run one update handler with timeout so one stuck task won't block others."""
+    update_id_val = update.get("update_id")
+    update_id = str(update_id_val) if update_id_val is not None else "unknown"
+    try:
+        await asyncio.wait_for(
+            _handle_update(
+                tg_client,
+                kragen_client,
+                settings=settings,
+                update=update,
+            ),
+            timeout=max(30, settings.task_wait_timeout_seconds + 20),
+        )
+    except asyncio.TimeoutError:
+        logger.warning("telegram_update_timeout", update_id=update_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("telegram_update_wrapper_failed", update_id=update_id)
+
+
 async def run_telegram_channel() -> None:
     """Main long-polling loop."""
     settings = _read_settings()
@@ -991,6 +797,7 @@ async def run_telegram_channel() -> None:
 
     offset: int | None = None
     cleanup_task = asyncio.create_task(_dedup_cleanup_worker(settings=settings))
+    pending_updates: set[asyncio.Task[None]] = set()
     try:
         async with httpx.AsyncClient() as tg_client, httpx.AsyncClient() as kragen_client:
             while True:
@@ -1004,12 +811,27 @@ async def run_telegram_channel() -> None:
                         update_id_val = update.get("update_id")
                         if not isinstance(update_id_val, int):
                             continue
-                        await _handle_update(
-                            tg_client,
-                            kragen_client,
-                            settings=settings,
-                            update=update,
+                        task = asyncio.create_task(
+                            _handle_update_with_timeout(
+                                tg_client,
+                                kragen_client,
+                                settings=settings,
+                                update=update,
+                            )
                         )
+                        pending_updates.add(task)
+                        task.add_done_callback(pending_updates.discard)
+                        if len(pending_updates) >= 32:
+                            done, pending = await asyncio.wait(
+                                pending_updates, return_when=asyncio.FIRST_COMPLETED
+                            )
+                            pending_updates = set(pending)
+                            for done_task in done:
+                                try:
+                                    done_task.result()
+                                except Exception:
+                                    # _handle_update_with_timeout already logs internals.
+                                    pass
                         offset = update_id_val + 1
                 except httpx.HTTPError as exc:
                     logger.warning("telegram_http_error", error=str(exc))
@@ -1020,36 +842,36 @@ async def run_telegram_channel() -> None:
                 await asyncio.sleep(settings.loop_delay_seconds)
     finally:
         cleanup_task.cancel()
+        for task in list(pending_updates):
+            task.cancel()
+        if pending_updates:
+            await asyncio.gather(*pending_updates, return_exceptions=True)
         try:
             await cleanup_task
         except asyncio.CancelledError:
             pass
 
 
-async def _tg_set_webhook(
-    client: httpx.AsyncClient,
+async def _webhook_worker(
     *,
+    queue: asyncio.Queue[dict[str, Any]],
     settings: TelegramChannelSettings,
 ) -> None:
-    """Register webhook URL in Telegram Bot API when configured."""
-    if not settings.webhook_public_url:
-        raise RuntimeError("KRAGEN_TELEGRAM_WEBHOOK_PUBLIC_URL is required in webhook mode")
-    normalized_path = settings.webhook_path
-    if not normalized_path.startswith("/"):
-        normalized_path = "/" + normalized_path
-    await _tg_call(
-        client,
-        settings=settings,
-        method="setWebhook",
-        payload={
-            "url": settings.webhook_public_url.rstrip("/") + normalized_path,
-            **(
-                {"secret_token": settings.webhook_secret_token}
-                if settings.webhook_secret_token
-                else {}
-            ),
-        },
-    )
+    """Consume webhook updates and run the same handler as polling mode."""
+    async with httpx.AsyncClient() as tg_client, httpx.AsyncClient() as kragen_client:
+        while True:
+            update = await queue.get()
+            try:
+                await _handle_update_with_timeout(
+                    tg_client,
+                    kragen_client,
+                    settings=settings,
+                    update=update,
+                )
+            except Exception:
+                logger.exception("telegram_webhook_update_failed")
+            finally:
+                queue.task_done()
 
 
 async def run_telegram_channel_webhook() -> None:
@@ -1116,26 +938,6 @@ async def run_telegram_channel_webhook() -> None:
     await server.serve()
 
 
-async def _webhook_worker(
-    *,
-    queue: asyncio.Queue[dict[str, Any]],
-    settings: TelegramChannelSettings,
-) -> None:
-    """Consume webhook updates and run the same handler as polling mode."""
-    async with httpx.AsyncClient() as tg_client, httpx.AsyncClient() as kragen_client:
-        while True:
-            update = await queue.get()
-            try:
-                await _handle_update(
-                    tg_client,
-                    kragen_client,
-                    settings=settings,
-                    update=update,
-                )
-            except Exception:
-                logger.exception("telegram_webhook_update_failed")
-            finally:
-                queue.task_done()
 
 
 async def _dedup_cleanup_worker(*, settings: TelegramChannelSettings) -> None:

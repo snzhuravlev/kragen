@@ -26,6 +26,7 @@ from kragen.logging_config import get_logger
 from kragen.plugins.manager import get_plugin_manager
 from kragen.services import task_stream
 from kragen.services.audit_service import write_audit
+from kragen.services.task_queue import TaskJob, enqueue
 
 logger = get_logger(__name__)
 _S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
@@ -753,7 +754,7 @@ def _log_scheduled_worker_done(asyncio_task: asyncio.Task[None]) -> None:
         pass
 
 
-def schedule_task(
+async def schedule_task(
     *,
     task_id: uuid.UUID,
     session_id: uuid.UUID,
@@ -761,7 +762,18 @@ def schedule_task(
     user_id: uuid.UUID | None,
     correlation_id: str | None,
 ) -> None:
-    """Fire-and-forget async worker (MVP single-process)."""
+    """Dispatch a Cursor worker job via the configured task backend."""
+
+    job = TaskJob(
+        task_id=task_id,
+        session_id=session_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        correlation_id=correlation_id,
+    )
+    if _settings().task_queue.backend == "redis":
+        await enqueue(job)
+        return
 
     async def _runner() -> None:
         from kragen.db.session import async_session_factory

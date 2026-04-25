@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, PostgresDsn
+from pydantic import BaseModel, Field, PostgresDsn, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -84,6 +84,10 @@ class AuthSettings(BaseModel):
 
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
+    oidc_jwks_url: str | None = None
+    raw_uuid_bearer_enabled: bool = True
     disabled: bool = False
     dev_user_id: str | None = None
     admin_user_ids: list[str] = Field(
@@ -113,8 +117,33 @@ class WorkerSettings(BaseModel):
     workspace_root: str = "~/.kragen/workspaces"
     timeout_seconds: int = 180
     retries: int = 1
+    stuck_task_timeout_seconds: int = 900
+    task_reap_interval_seconds: int = 60
     memory_context_enabled: bool = True
     memory_top_k: int = 4
+
+
+class TaskStreamSettings(BaseModel):
+    """Transport for task output consumed by SSE clients."""
+
+    model_config = SettingsConfigDict(extra="forbid")
+
+    backend: Literal["memory", "redis"] = "memory"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_prefix: str = "kragen:task-stream"
+    ttl_seconds: int = 3600
+    block_timeout_ms: int = 5000
+
+
+class TaskQueueSettings(BaseModel):
+    """Queue used to dispatch Cursor worker jobs."""
+
+    model_config = SettingsConfigDict(extra="forbid")
+
+    backend: Literal["inline", "redis"] = "inline"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    redis_key: str = "kragen:task-queue"
+    block_timeout_seconds: int = 5
 
 
 class ChannelsSettings(BaseModel):
@@ -159,6 +188,7 @@ class TelegramChannelSettings(BaseModel):
 
     bot_token: str = ""
     api_base_url: str = "http://127.0.0.1:8000"
+    api_bearer_token: str | None = None
     auth_user_id: str = "00000000-0000-0000-0000-000000000001"
     default_workspace_id: str = "00000000-0000-0000-0000-000000000001"
     mode: str = "polling"
@@ -201,9 +231,36 @@ class KragenSettings(BaseSettings):
     auth: AuthSettings = Field(default_factory=AuthSettings)
     http: HttpSettings = Field(default_factory=HttpSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
+    task_stream: TaskStreamSettings = Field(default_factory=TaskStreamSettings)
+    task_queue: TaskQueueSettings = Field(default_factory=TaskQueueSettings)
     channels: ChannelsSettings = Field(default_factory=ChannelsSettings)
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
     telegram_channel: TelegramChannelSettings = Field(default_factory=TelegramChannelSettings)
+
+    @model_validator(mode="after")
+    def validate_production_profile(self) -> "KragenSettings":
+        """Reject development-only settings in production."""
+        if self.app.environment != "prod":
+            return self
+
+        errors: list[str] = []
+        if self.auth.disabled:
+            errors.append("auth.disabled must be false")
+        if self.auth.dev_user_id:
+            errors.append("auth.dev_user_id must be unset")
+        if self.auth.jwt_secret in {"", "change-me-in-production"}:
+            errors.append("auth.jwt_secret must be set to a production secret")
+        if self.auth.raw_uuid_bearer_enabled:
+            errors.append("auth.raw_uuid_bearer_enabled must be false")
+        if self.auth.jwt_algorithm.upper().startswith(("RS", "ES")) and not self.auth.oidc_jwks_url:
+            errors.append("auth.oidc_jwks_url must be set for asymmetric JWT algorithms")
+        if self.api.host in {"0.0.0.0", "::"}:
+            errors.append("api.host must not bind to all interfaces behind a reverse proxy")
+
+        if errors:
+            joined = "; ".join(errors)
+            raise ValueError(f"Invalid production configuration: {joined}")
+        return self
 
     @classmethod
     def settings_customise_sources(

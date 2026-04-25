@@ -64,7 +64,7 @@ async def post_message(
     await db.refresh(user_msg)
     await db.refresh(task)
 
-    orchestrator.schedule_task(
+    await orchestrator.schedule_task(
         task_id=task.id,
         session_id=session_id,
         workspace_id=sess.workspace_id,

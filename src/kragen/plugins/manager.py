@@ -24,6 +24,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
+
 from kragen.config import KragenSettings, get_settings
 from kragen.logging_config import get_logger
 from kragen.plugins.base import (
@@ -37,6 +39,7 @@ from kragen.plugins.base import (
 from kragen.plugins.context import PluginContext
 from kragen.plugins.errors import (
     PluginAlreadyRegisteredError,
+    PluginConfigError,
     PluginNotFoundError,
 )
 from kragen.plugins.loader import DiscoveredPlugin, discover_plugins
@@ -129,6 +132,13 @@ class PluginManager:
                 cfg_entry = enabled_cfg.get(manifest.id)
                 is_enabled = cfg_entry is not None
                 plugin_config = dict(cfg_entry.config) if cfg_entry else {}
+                setup_error: str | None = None
+                if is_enabled:
+                    try:
+                        self._validate_plugin_config(manifest, plugin_config)
+                    except PluginConfigError as exc:
+                        is_enabled = False
+                        setup_error = f"{type(exc).__name__}: {exc}"
 
                 record = _PluginRecord(
                     manifest=manifest,
@@ -138,6 +148,7 @@ class PluginManager:
                     ep_name=found.ep_name,
                     dist_name=found.dist_name,
                 )
+                record.setup_error = setup_error
                 self._records[manifest.id] = record
 
             self._run_setup_for_enabled()
@@ -152,6 +163,23 @@ class PluginManager:
         """Invoke ``setup()`` on every enabled plugin, collecting registered specs."""
         for plugin_id, record in self._records.items():
             if not record.enabled:
+                continue
+            missing_requires = [
+                required
+                for required in record.manifest.requires
+                if not self._records.get(required) or not self._records[required].enabled
+            ]
+            if missing_requires:
+                record.setup_error = (
+                    "PluginConfigError: missing required enabled plugin(s): "
+                    + ", ".join(missing_requires)
+                )
+                record.enabled = False
+                logger.warning(
+                    "plugin_requires_missing",
+                    plugin_id=plugin_id,
+                    missing=missing_requires,
+                )
                 continue
             ctx = PluginContext(
                 manager=self,
@@ -185,6 +213,11 @@ class PluginManager:
             raise PluginAlreadyRegisteredError(
                 f"Skill '{spec.id}' already registered by plugin '{plugin_id}'."
             )
+        owner = self._find_spec_owner(kind="skill", spec_id=spec.id, excluding_plugin_id=plugin_id)
+        if owner is not None:
+            raise PluginAlreadyRegisteredError(
+                f"Skill '{spec.id}' already registered by plugin '{owner}'."
+            )
         record.skills.append(spec)
 
     def _register_mcp(self, plugin_id: str, spec: MCPServerSpec) -> None:
@@ -193,14 +226,37 @@ class PluginManager:
             raise PluginAlreadyRegisteredError(
                 f"MCP server '{spec.id}' already registered by plugin '{plugin_id}'."
             )
+        owner = self._find_spec_owner(kind="mcp", spec_id=spec.id, excluding_plugin_id=plugin_id)
+        if owner is not None:
+            raise PluginAlreadyRegisteredError(
+                f"MCP server '{spec.id}' already registered by plugin '{owner}'."
+            )
         record.mcp_servers.append(spec)
 
     def _register_backend(self, plugin_id: str, spec: BackendSpec) -> None:
         record = self._records[plugin_id]
+        if any(s.id == spec.id for s in record.backends):
+            raise PluginAlreadyRegisteredError(
+                f"Backend '{spec.id}' already registered by plugin '{plugin_id}'."
+            )
+        owner = self._find_spec_owner(kind="backend", spec_id=spec.id, excluding_plugin_id=plugin_id)
+        if owner is not None:
+            raise PluginAlreadyRegisteredError(
+                f"Backend '{spec.id}' already registered by plugin '{owner}'."
+            )
         record.backends.append(spec)
 
     def _register_channel(self, plugin_id: str, spec: ChannelSpec) -> None:
         record = self._records[plugin_id]
+        if any(s.id == spec.id for s in record.channels):
+            raise PluginAlreadyRegisteredError(
+                f"Channel '{spec.id}' already registered by plugin '{plugin_id}'."
+            )
+        owner = self._find_spec_owner(kind="channel", spec_id=spec.id, excluding_plugin_id=plugin_id)
+        if owner is not None:
+            raise PluginAlreadyRegisteredError(
+                f"Channel '{spec.id}' already registered by plugin '{owner}'."
+            )
         record.channels.append(spec)
 
     # --- read-side API used by core ----------------------------------------
@@ -317,6 +373,24 @@ class PluginManager:
                 return self._serialize_record(record)
 
             if enabled:
+                try:
+                    self._validate_plugin_config(record.manifest, record.config)
+                except PluginConfigError as exc:
+                    record.setup_error = f"{type(exc).__name__}: {exc}"
+                    record.enabled = False
+                    return self._serialize_record(record)
+                missing_requires = [
+                    required
+                    for required in record.manifest.requires
+                    if not self._records.get(required) or not self._records[required].enabled
+                ]
+                if missing_requires:
+                    record.setup_error = (
+                        "PluginConfigError: missing required enabled plugin(s): "
+                        + ", ".join(missing_requires)
+                    )
+                    record.enabled = False
+                    return self._serialize_record(record)
                 record.skills.clear()
                 record.mcp_servers.clear()
                 record.channels.clear()
@@ -353,6 +427,7 @@ class PluginManager:
             record = self._records.get(plugin_id)
             if record is None:
                 raise PluginNotFoundError(plugin_id)
+            self._validate_plugin_config(record.manifest, new_config)
             record.config = dict(new_config)
             if record.enabled:
                 record.skills.clear()
@@ -394,6 +469,45 @@ class PluginManager:
                 logger.exception("plugin_shutdown_failed", plugin_id=plugin_id)
 
     # --- helpers ------------------------------------------------------------
+
+    @staticmethod
+    def _validate_plugin_config(manifest: PluginManifest, config: dict[str, Any]) -> None:
+        schema = manifest.config_schema
+        if schema is None:
+            return
+        try:
+            Draft202012Validator.check_schema(schema)
+            Draft202012Validator(schema).validate(config)
+        except SchemaError as exc:
+            raise PluginConfigError(
+                f"Invalid config_schema for plugin '{manifest.id}': {exc.message}"
+            ) from exc
+        except ValidationError as exc:
+            path = ".".join(str(part) for part in exc.path)
+            location = f" at '{path}'" if path else ""
+            raise PluginConfigError(
+                f"Invalid config for plugin '{manifest.id}'{location}: {exc.message}"
+            ) from exc
+
+    def _find_spec_owner(
+        self,
+        *,
+        kind: str,
+        spec_id: str,
+        excluding_plugin_id: str,
+    ) -> str | None:
+        for other_plugin_id, other in self._records.items():
+            if other_plugin_id == excluding_plugin_id or not other.enabled:
+                continue
+            if kind == "skill" and any(spec.id == spec_id for spec in other.skills):
+                return other_plugin_id
+            if kind == "mcp" and any(spec.id == spec_id for spec in other.mcp_servers):
+                return other_plugin_id
+            if kind == "backend" and any(spec.id == spec_id for spec in other.backends):
+                return other_plugin_id
+            if kind == "channel" and any(spec.id == spec_id for spec in other.channels):
+                return other_plugin_id
+        return None
 
     @staticmethod
     def _serialize_record(record: _PluginRecord) -> dict[str, Any]:

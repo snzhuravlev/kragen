@@ -26,6 +26,11 @@ storage:
 auth:
   jwt_secret: change-me-in-production
   jwt_algorithm: HS256
+  jwt_issuer: null
+  jwt_audience: null
+  oidc_jwks_url: null
+  # Development/legacy fallback. Must be false in production.
+  raw_uuid_bearer_enabled: true
   disabled: false
   dev_user_id: null
   # Explicit allow-list for admin API (/admin/config/*, /admin/cursor-auth/*,
@@ -42,8 +47,27 @@ worker:
   workspace_root: ~/.kragen/workspaces
   timeout_seconds: 180
   retries: 1
+  # Reap tasks stuck in `running` longer than this threshold.
+  stuck_task_timeout_seconds: 900
+  # Sweep interval for stale running task cleanup.
+  task_reap_interval_seconds: 60
   memory_context_enabled: true
   memory_top_k: 4
+
+task_stream:
+  # memory | redis. Use redis when running more than one API/worker process.
+  backend: memory
+  redis_url: redis://127.0.0.1:6379/0
+  redis_prefix: kragen:task-stream
+  ttl_seconds: 3600
+  block_timeout_ms: 5000
+
+task_queue:
+  # inline | redis. Use redis plus `kragen-worker` for production.
+  backend: inline
+  redis_url: redis://127.0.0.1:6379/0
+  redis_key: kragen:task-queue
+  block_timeout_seconds: 5
 
 channels:
   openclaw_enabled: false
@@ -62,6 +86,8 @@ telegram_channel:
   # Test profile for kragen-telegram-channel. Keep production secrets in env.
   bot_token: "1234567890:TEST_BOT_TOKEN_REPLACE_ME"
   api_base_url: "http://127.0.0.1:8000"
+  # Set to a JWT/OIDC token in production. Falls back to auth_user_id in dev.
+  api_bearer_token: null
   auth_user_id: "00000000-0000-0000-0000-000000001111"
   default_workspace_id: "00000000-0000-0000-0000-000000001111"
 

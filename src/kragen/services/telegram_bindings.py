@@ -12,11 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from kragen.models.core import Channel, Session, TelegramBinding
 
 DedupStatus = Literal["processing", "completed", "failed"]
+_STALE_RESET_GAP = 1_000_000
 
 
 def is_stale_telegram_update(*, last_update_id: int | None, incoming_update_id: int) -> bool:
     """Return True if an incoming Telegram update id should be skipped."""
-    return last_update_id is not None and incoming_update_id <= last_update_id
+    if last_update_id is None:
+        return False
+    if incoming_update_id > last_update_id:
+        return False
+    # If stored update id is far ahead, treat it as a stream reset/corruption
+    # (for example from synthetic test updates) and allow recovery.
+    if (last_update_id - incoming_update_id) > _STALE_RESET_GAP:
+        return False
+    return True
 
 
 async def get_binding_by_chat_id(db: AsyncSession, *, chat_id: int) -> TelegramBinding | None:

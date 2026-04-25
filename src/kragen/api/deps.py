@@ -4,6 +4,8 @@ import uuid
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
+import jwt
+from jwt import PyJWKClient
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import column, table
@@ -43,18 +45,65 @@ async def require_bearer_user(
     authorization: Annotated[str | None, Header()] = None,
 ) -> uuid.UUID:
     """
-    MVP auth: optional Bearer token interpreted as raw user UUID for local dev.
+    Resolve Bearer credentials to a user UUID.
 
-    Production should validate JWT and map to user.
+    Production validates JWT/OIDC tokens. Raw UUID bearer tokens are retained as
+    an explicit development/legacy fallback only.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
+    settings = get_settings()
+    token_errors: list[str] = []
+
+    if "." in token or not settings.auth.raw_uuid_bearer_enabled:
+        try:
+            return _decode_jwt_user_id(token)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            token_errors.append(f"{type(exc).__name__}: {exc}")
+
+    if not settings.auth.raw_uuid_bearer_enabled:
+        logger.warning("invalid_jwt_token", token_prefix=token[:8], errors=token_errors)
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
     try:
         return uuid.UUID(token)
     except ValueError as exc:
         logger.warning("invalid_bearer_token", token_prefix=token[:8])
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
+
+
+def _decode_jwt_user_id(token: str) -> uuid.UUID:
+    """Validate JWT/OIDC bearer token and return the subject UUID."""
+    settings = get_settings().auth
+    algorithm = settings.jwt_algorithm
+    decode_kwargs: dict[str, object] = {
+        "algorithms": [algorithm],
+        "options": {"verify_aud": settings.jwt_audience is not None},
+    }
+    if settings.jwt_issuer:
+        decode_kwargs["issuer"] = settings.jwt_issuer
+    if settings.jwt_audience:
+        decode_kwargs["audience"] = settings.jwt_audience
+
+    try:
+        if settings.oidc_jwks_url:
+            signing_key = PyJWKClient(settings.oidc_jwks_url).get_signing_key_from_jwt(token)
+            claims = jwt.decode(token, signing_key.key, **decode_kwargs)
+        else:
+            claims = jwt.decode(token, settings.jwt_secret, **decode_kwargs)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
+
+    subject = claims.get("sub") or claims.get("user_id")
+    if not subject:
+        raise HTTPException(status_code=401, detail="JWT subject is required")
+    try:
+        return uuid.UUID(str(subject))
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="JWT subject must be a UUID") from exc
 
 
 async def get_user_id_for_dev(
