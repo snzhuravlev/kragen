@@ -51,6 +51,7 @@ kragen-worker = "kragen.worker:main"
 # entries under [project.entry-points."kragen.plugins"].
 [project.entry-points."kragen.plugins"]
 kragen-skill-concise = "kragen.plugins.builtin.concise_skill:plugin"
+kragen-skill-kragen-storage = "kragen.plugins.builtin.kragen_storage_skill:plugin"
 kragen-mcp-kragen-files = "kragen.plugins.builtin.kragen_files_mcp_plugin:plugin"
 
 [tool.setuptools.packages.find]

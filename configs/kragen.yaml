@@ -89,6 +89,9 @@ plugins:
     # Example built-in skill: short, actionable replies.
     - id: kragen-skill-concise
       config: {}
+    # Route /library/... and download requests to API/MCP, not local mkdir.
+    - id: kragen-skill-kragen-storage
+      config: {}
     # Cursor worker MCP: import_url -> POST /files/import (env injected per task).
     - id: kragen-mcp-kragen-files
       config: {}
