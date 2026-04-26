@@ -10,15 +10,39 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
 
-from kragen.api.deps import CorrelationId, DbSession, UserId, ensure_workspace_access
-from kragen.api.schemas import ArtifactOut, DocumentOut, StorageEntryOut, StorageEntryUpdate, StorageFolderCreate
+from kragen.api.deps import (
+    CorrelationId,
+    DbSession,
+    FileImportAuthDep,
+    UserId,
+    ensure_workspace_access,
+)
+from kragen.api.schemas import (
+    ArtifactOut,
+    DocumentOut,
+    StorageEntryOut,
+    StorageEntryUpdate,
+    StorageFileImport,
+    StorageFolderCreate,
+)
+from kragen.config import get_settings
 from kragen.models.core import Artifact
 from kragen.models.memory import Document
 from kragen.services import file_storage
 from kragen.services.audit_service import write_audit
+from kragen.services.url_import import UrlImportError, fetch_url_bytes
 from kragen.storage import object_store
 
 router = APIRouter(tags=["files"])
+
+
+def _normalize_dest_folder_path(raw: str) -> str:
+    """Return a normalized absolute logical folder path (e.g. /library/docs)."""
+    s = raw.strip().replace("\\", "/")
+    if not s.startswith("/"):
+        s = "/" + s
+    s = s.rstrip("/")
+    return s if s else "/"
 
 
 def _storage_http_error(exc: file_storage.FileStorageError) -> HTTPException:
@@ -121,6 +145,85 @@ async def upload_file(
         payload={"entry_id": str(entry.id), "uri": entry.uri, "path": entry.path_cache},
         workspace_id=workspace_id,
         actor_user_id=user_id,
+        correlation_id=correlation_id,
+    )
+    await db.commit()
+    await db.refresh(entry)
+    return entry
+
+
+@router.post("/files/import", response_model=StorageEntryOut)
+async def import_file_from_url(
+    body: StorageFileImport,
+    db: DbSession,
+    import_auth: FileImportAuthDep,
+    correlation_id: CorrelationId,
+) -> StorageEntryOut:
+    """Download a file from a URL (server-side) and store it under a logical path."""
+    if import_auth.task_workspace_id is not None and import_auth.task_workspace_id != body.workspace_id:
+        raise HTTPException(
+            status_code=403,
+            detail="This token is bound to a different workspace",
+        )
+    await ensure_workspace_access(
+        db, user_id=import_auth.user_id, workspace_id=body.workspace_id
+    )
+    dest = _normalize_dest_folder_path(body.dest_folder_path)
+    try:
+        fetched = await fetch_url_bytes(
+            body.url, settings=get_settings().file_import
+        )
+    except UrlImportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    name_raw = (body.filename or fetched.filename_hint or "download.bin").strip()
+    name = Path(name_raw).name
+    if not name:
+        name = "download.bin"
+
+    parent_id: uuid.UUID | None
+    if dest in ("/", ""):
+        parent_id = None
+    else:
+        folder = await file_storage.ensure_folder_path(
+            db,
+            workspace_id=body.workspace_id,
+            path=dest,
+            created_by_user_id=import_auth.user_id,
+            source_type="import_url",
+        )
+        if folder is None:
+            raise HTTPException(
+                status_code=400, detail="Could not ensure destination folder"
+            )
+        parent_id = folder.id
+
+    try:
+        entry, _doc = await file_storage.create_file_from_bytes(
+            db,
+            workspace_id=body.workspace_id,
+            parent_id=parent_id,
+            name=name,
+            body=fetched.body,
+            mime_type=fetched.content_type,
+            created_by_user_id=import_auth.user_id,
+            source_type="import_url",
+            metadata={"source_url": body.url},
+            create_document=body.create_document,
+        )
+    except file_storage.FileStorageError as exc:
+        raise _storage_http_error(exc) from exc
+
+    await write_audit(
+        db,
+        event_type="storage.file_imported",
+        payload={
+            "entry_id": str(entry.id),
+            "source_url": body.url,
+            "path": entry.path_cache,
+        },
+        workspace_id=body.workspace_id,
+        actor_user_id=import_auth.user_id,
         correlation_id=correlation_id,
     )
     await db.commit()

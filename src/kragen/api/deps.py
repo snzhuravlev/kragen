@@ -1,6 +1,7 @@
 """FastAPI dependencies: DB, auth context, correlation IDs, RBAC."""
 
 import uuid
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -14,6 +15,7 @@ from kragen.config import get_settings
 from kragen.db.session import get_session
 from kragen.logging_config import get_logger
 from kragen.models.core import Workspace
+from kragen.services import task_token
 
 logger = get_logger(__name__)
 _settings = get_settings()
@@ -126,6 +128,45 @@ async def get_user_id_for_dev(
 
 
 UserId = Annotated[uuid.UUID, Depends(get_user_id_for_dev)]
+
+
+@dataclass(frozen=True, slots=True)
+class FileImportAuth:
+    """Resolves a normal user or a short-lived task token for /files/import."""
+
+    user_id: uuid.UUID
+    # If set, the request body workspace_id must match (task token binding).
+    task_workspace_id: uuid.UUID | None = None
+
+
+async def get_file_import_auth(
+    authorization: Annotated[str | None, Header()] = None,
+    x_dev_user_id: Annotated[str | None, Header(alias="X-Dev-User-ID")] = None,
+) -> FileImportAuth:
+    """
+    Like ``get_user_id_for_dev`` but also accepts a ``kragen_task`` JWT with scope files:import.
+    """
+    if get_settings().auth.disabled:
+        if x_dev_user_id:
+            return FileImportAuth(user_id=uuid.UUID(x_dev_user_id))
+        if get_settings().auth.dev_user_id:
+            return FileImportAuth(user_id=uuid.UUID(get_settings().auth.dev_user_id))
+        raise HTTPException(
+            status_code=401,
+            detail="AUTH_DISABLED requires X-Dev-User-ID or DEV_USER_ID",
+        )
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    raw = authorization.removeprefix("Bearer ").strip()
+    t_payload = task_token.try_decode_task_token(raw)
+    if t_payload is not None:
+        return FileImportAuth(user_id=t_payload.user_id, task_workspace_id=t_payload.workspace_id)
+    user_id = await require_bearer_user(authorization)
+    return FileImportAuth(user_id=user_id)
+
+
+FileImportAuthDep = Annotated[FileImportAuth, Depends(get_file_import_auth)]
 
 
 def is_admin_user(user_id: uuid.UUID) -> bool:

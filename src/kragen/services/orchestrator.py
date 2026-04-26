@@ -20,11 +20,11 @@ from botocore.config import Config
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from kragen.config import KragenSettings, get_settings
+from kragen.config import KragenSettings, api_public_base_url, get_settings
 from kragen.models.core import Message, Task
 from kragen.logging_config import get_logger
 from kragen.plugins.manager import get_plugin_manager
-from kragen.services import task_stream
+from kragen.services import task_token, task_stream
 from kragen.services.audit_service import write_audit
 from kragen.services.task_queue import TaskJob, enqueue
 
@@ -124,6 +124,8 @@ def _workspace_path(workspace_id: uuid.UUID) -> Path:
 def _build_prompt(
     *,
     session_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    api_public_url: str,
     context_messages: list[Message],
     user_message: str,
     memory_context: str,
@@ -148,11 +150,21 @@ def _build_prompt(
             "Channel policy: OpenClaw channel is disabled in this environment. "
             "Do not call OpenClaw MCP tools or rely on OpenClaw routes.\n\n"
         )
+    storage_model = (
+        f"Workspace ID: {workspace_id}\n"
+        f"Kragen API base URL: {api_public_url}\n"
+        "Logical storage paths (for example /library/postgresql) are entries in Kragen object storage; "
+        "they are not local paths under the Cursor --workspace directory. "
+        "To put a file from a known public URL into logical storage, use POST /files/import with a "
+        "Bearer token, or the kragen-files MCP import_url tool when that server is available. "
+        "When KRAGEN_TASK_TOKEN is set in the environment, use it as the Bearer value for the API.\n\n"
+    )
     return (
         "You are the execution agent for Kragen Web channel.\n"
         "Provide concise, actionable answers.\n"
         "If you need tools, prefer MCP servers configured in Cursor.\n\n"
         f"{channel_policy}"
+        f"{storage_model}"
         f"Session ID: {session_id}\n"
         "Long-term memory context:\n"
         f"{memory_block}\n\n"
@@ -291,17 +303,50 @@ async def _read_stream_lines(
             await flush()
 
 
+async def _inject_kragen_files_mcp_env(
+    workspace_path: Path, env: dict[str, str], server_key: str = "kragen-files"
+) -> None:
+    """Merge per-task env into the kragen-files MCP entry in .cursor/mcp.json if present."""
+    mcp_file = workspace_path / ".cursor" / "mcp.json"
+    if not mcp_file.is_file():
+        return
+
+    def _apply() -> None:
+        data = json.loads(mcp_file.read_text(encoding="utf-8"))
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict) or server_key not in servers:
+            return
+        entry = servers[server_key]
+        if not isinstance(entry, dict):
+            return
+        base = entry.get("env")
+        if not isinstance(base, dict):
+            base = {}
+        merged = {str(k): str(v) for k, v in base.items()}
+        merged.update(env)
+        entry["env"] = merged
+        mcp_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    await asyncio.to_thread(_apply)
+
+
 async def _run_cursor_attempt(
     *,
     command: list[str],
     task_stream_id: str,
     timeout_seconds: int,
+    env: dict[str, str] | None = None,
 ) -> dict[str, str | int | bool]:
     """Run one Cursor Agent attempt and stream stdout/stderr."""
+    child_env = {**os.environ, **(env or {})}
     proc = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=child_env,
     )
     assert proc.stdout is not None
     assert proc.stderr is not None
@@ -542,8 +587,11 @@ async def run_cursor_worker(
             await _phase(tid, "Running storage health checks from API host runtime…")
             runtime_checks_context = await _load_storage_runtime_context()
             await _phase(tid, "Storage runtime checks completed and injected into prompt.")
+        public_url = api_public_base_url()
         prompt = _build_prompt(
             session_id=session_id,
+            workspace_id=workspace_id,
+            api_public_url=public_url,
             context_messages=recent,
             user_message=user_message,
             memory_context=memory_context,
@@ -577,6 +625,22 @@ async def run_cursor_worker(
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("plugin_materialize_mcp_failed", error=str(exc))
+
+        task_env: dict[str, str] | None = None
+        if _settings().worker.task_token_enabled and user_id is not None:
+            try:
+                tkn = task_token.mint_task_token(
+                    user_id=user_id, workspace_id=workspace_id, task_id=task_id
+                )
+                task_env = {
+                    "KRAGEN_API_URL": public_url,
+                    "KRAGEN_TASK_TOKEN": tkn,
+                    "KRAGEN_WORKSPACE_ID": str(workspace_id),
+                }
+                await _inject_kragen_files_mcp_env(ws_path, task_env)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("task_token_mint_or_mcp_inject_failed", error=str(exc))
+                task_env = None
 
         command = _cursor_command(prompt, ws_path)
 
@@ -615,6 +679,7 @@ async def run_cursor_worker(
                 command=command,
                 task_stream_id=tid,
                 timeout_seconds=run_timeout,
+                env=task_env,
             )
             final_output = str(result["stdout"])
             final_error = str(result["stderr"])

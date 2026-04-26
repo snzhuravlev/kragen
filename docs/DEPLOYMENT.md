@@ -85,6 +85,15 @@ For the current MVP, **one** worker is recommended because task SSE is in-memory
 
 `app` / `api` keys in YAML configure host and port for the built-in `kragen-api` runner (`kragen.api.main:run`).
 
+## Cursor worker, egress, and file import
+
+- Set **`api.public_base_url`** in `configs/kragen.yaml` to the public origin clients and workers should use (for example `https://api.example.com`). The orchestrator and injected tooling default **`KRAGEN_API_URL`** to this value. If unset, the default is `http://127.0.0.1:{api.port}`.
+- **Outbound HTTPS** from the **API** process is required for **`POST /files/import`** (server-side download of remote URLs). If you do not use import, you may block egress; otherwise open egress to the hosts you need or restrict with **`file_import.allowed_host_suffixes`**.
+- The **Cursor Agent** CLI (`cursor agent`) needs a valid Cursor session: run **`cursor agent login`** for the service user or set **`CURSOR_API_KEY`**. The API logs and task stream add a hint when the worker prints `Authentication required`.
+- **MCP tool approval** can block the **`kragen-files`** server: enable the **`kragen-mcp-kragen-files`** plugin in `plugins.enabled` and allow that MCP server in Cursor if prompted.
+- For **`POST /files/import`**, set **`file_import.allowed_host_suffixes`** in production to trusted host suffixes (for example `postgresql.org`). An empty list allows any host and is only suitable for development.
+- **Task-scoped tokens** (`worker.task_token_enabled`): the worker mints a short JWT for the task user, passes **`KRAGEN_TASK_TOKEN`**, **`KRAGEN_API_URL`**, and **`KRAGEN_WORKSPACE_ID`** into the subprocess and into the `kragen-files` MCP `env` so tools can call the import API without manual secrets.
+
 ## Secrets and security
 
 - In production, **`auth.disabled`** must be `false`; use real authentication (JWT/OIDC) instead of dev shortcuts.

@@ -12,6 +12,13 @@ app:
 api:
   host: 0.0.0.0
   port: 8000
+  # public_base_url: "https://api.example.com"  # used for worker KRAGEN_API_URL when set
+
+# Server-side download into logical storage (POST /files/import).
+# file_import:
+#   max_bytes: 104857600
+#   timeout_seconds: 60
+#   allowed_host_suffixes: []  # e.g. [ "postgresql.org" ] in production; empty = any host (dev)
 
 database:
   # Keep secrets in environment (KRAGEN_DATABASE__URL).
@@ -80,6 +87,9 @@ plugins:
   enabled:
     # Example built-in skill: short, actionable replies.
     - id: kragen-skill-concise
+      config: {}
+    # Cursor worker MCP: import_url -> POST /files/import (env injected per task).
+    - id: kragen-mcp-kragen-files
       config: {}
 
 telegram_channel:

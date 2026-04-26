@@ -130,6 +130,18 @@ class StorageFolderCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=512)
 
 
+class StorageFileImport(BaseModel):
+    """Import a file from a public URL into logical storage (server-side download)."""
+
+    url: str = Field(..., min_length=8, max_length=4096)
+    workspace_id: uuid.UUID
+    # Absolute logical folder path, e.g. /library/postgresql (not the Cursor --workspace path).
+    dest_folder_path: str = Field(..., min_length=1, max_length=4000)
+    # Optional file name; if omitted, derived from the response (Content-Disposition or URL path).
+    filename: str | None = Field(default=None, max_length=512)
+    create_document: bool = True
+
+
 class StorageEntryUpdate(BaseModel):
     """Rename or move an entry."""
 

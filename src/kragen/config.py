@@ -56,6 +56,9 @@ class ApiSettings(BaseModel):
 
     host: str = "0.0.0.0"
     port: int = 8000
+    # Public URL for clients and Cursor worker (import/MCP). If unset, worker uses
+    # http://127.0.0.1:{port} for KRAGEN_API_URL.
+    public_base_url: str | None = None
 
 
 class DatabaseSettings(BaseModel):
@@ -108,6 +111,18 @@ class HttpSettings(BaseModel):
     cors_allow_origins: list[str] = Field(default_factory=lambda: ["*"])
 
 
+class FileImportSettings(BaseModel):
+    """Server-side download from URL into logical storage (POST /files/import)."""
+
+    model_config = SettingsConfigDict(extra="forbid")
+
+    max_bytes: int = 104_857_600  # 100 MiB
+    timeout_seconds: float = 60.0
+    # If non-empty, remote host must match one of these suffixes (e.g. "postgresql.org").
+    # Empty list = allow all hosts (suitable for local dev only).
+    allowed_host_suffixes: list[str] = Field(default_factory=list)
+
+
 class WorkerSettings(BaseModel):
     """Cursor / worker process paths."""
 
@@ -121,6 +136,9 @@ class WorkerSettings(BaseModel):
     task_reap_interval_seconds: int = 60
     memory_context_enabled: bool = True
     memory_top_k: int = 4
+    # Short-lived JWT for the Cursor worker to call /files/import (and MCP tools) as the user.
+    task_token_enabled: bool = True
+    task_token_ttl_seconds: int = 900
 
 
 class TaskStreamSettings(BaseModel):
@@ -230,6 +248,7 @@ class KragenSettings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     http: HttpSettings = Field(default_factory=HttpSettings)
+    file_import: FileImportSettings = Field(default_factory=FileImportSettings)
     worker: WorkerSettings = Field(default_factory=WorkerSettings)
     task_stream: TaskStreamSettings = Field(default_factory=TaskStreamSettings)
     task_queue: TaskQueueSettings = Field(default_factory=TaskQueueSettings)
@@ -300,3 +319,13 @@ def get_settings() -> KragenSettings:
 def clear_settings_cache() -> None:
     """Invalidate cached settings (call after updating kragen.yaml on disk)."""
     get_settings.cache_clear()
+
+
+def api_public_base_url() -> str:
+    """
+    Public HTTP origin for the API (for worker/MCP/CLI), without trailing slash.
+    """
+    s = get_settings()
+    if s.api.public_base_url:
+        return str(s.api.public_base_url).rstrip("/")
+    return f"http://127.0.0.1:{s.api.port}"
