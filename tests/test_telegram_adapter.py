@@ -6,8 +6,10 @@ import uuid
 
 from kragen.channels.telegram_adapter import (
     TelegramChannelSettings,
+    _bot_commands_payload,
     _extract_message_payload,
     _health_payload,
+    _help_text,
     _is_valid_webhook_secret,
     _safe_filename,
     _split_telegram_message,
@@ -74,3 +76,20 @@ def test_extract_message_payload_from_caption_and_document() -> None:
 
 def test_safe_filename_sanitizes_unsafe_chars() -> None:
     assert _safe_filename("../q1 report (final).pdf") == "q1_report_final_.pdf"
+
+
+def test_help_text_lists_storage_and_commands_aliases() -> None:
+    text = _help_text()
+
+    assert "/commands" in text
+    assert "/files" in text
+    assert "/mkdir <name>" in text
+    assert "/Inbox/Telegram" in text
+
+
+def test_bot_commands_payload_registers_command_menu() -> None:
+    commands = _bot_commands_payload()
+    names = {item["command"] for item in commands}
+
+    assert {"commands", "help", "files", "ls", "mkdir"}.issubset(names)
+    assert all(item["description"] for item in commands)

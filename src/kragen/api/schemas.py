@@ -96,6 +96,47 @@ class DocumentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class StorageEntryOut(BaseModel):
+    """Logical file tree entry metadata."""
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    parent_id: uuid.UUID | None
+    kind: str
+    name: str
+    path_cache: str
+    uri: str | None
+    size_bytes: int | None
+    mime_type: str | None
+    content_hash: str | None
+    source_type: str
+    metadata_: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias="metadata_",
+        serialization_alias="metadata",
+    )
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class StorageFolderCreate(BaseModel):
+    """Create a folder in the logical file tree."""
+
+    workspace_id: uuid.UUID
+    parent_id: uuid.UUID | None = None
+    name: str = Field(..., min_length=1, max_length=512)
+
+
+class StorageEntryUpdate(BaseModel):
+    """Rename or move an entry."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=512)
+    parent_id: uuid.UUID | None = None
+
+
 class ArtifactOut(BaseModel):
     """Artifact metadata."""
 

@@ -439,9 +439,36 @@
       }
       /* Other tabs: scroll inside main when content is taller than viewport */
       #tab-diagnostics.tab-panel.active,
+      #tab-files.tab-panel.active,
       #tab-config.tab-panel.active {
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
+      }
+      .files-toolbar,
+      .files-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .files-toolbar button,
+      .files-actions button {
+        width: auto;
+        min-width: 110px;
+        text-align: center;
+      }
+      .files-browser {
+        display: grid;
+        grid-template-columns: minmax(220px, 0.85fr) 1fr;
+        gap: 0.75rem;
+        min-height: 0;
+      }
+      #fileEntries {
+        min-height: 280px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .files-meta {
+        min-height: 280px;
       }
       .field-help {
         margin: 0 0 0.35rem;
@@ -489,6 +516,7 @@
         }
         .top-grid,
         .workspace-grid,
+        .files-browser,
         .split {
           grid-template-columns: 1fr;
         }
@@ -514,6 +542,17 @@
             aria-controls="tab-chat"
           >
             Chat
+          </button>
+          <button
+            type="button"
+            class="nav-item"
+            id="navFiles"
+            data-tab="files"
+            role="tab"
+            aria-selected="false"
+            aria-controls="tab-files"
+          >
+            Files
           </button>
           <button
             type="button"
@@ -612,6 +651,38 @@
             <section class="panel row chat-messages-section">
               <label>Messages</label>
               <div id="messages" class="output-box messages-feed"></div>
+            </section>
+          </div>
+
+          <div id="tab-files" class="tab-panel" role="tabpanel" aria-labelledby="navFiles">
+            <section class="panel row">
+              <label>Files</label>
+              <p class="field-help">
+                Logical workspace file tree backed by object storage. Uploads here are visible to
+                Telegram uploads saved under <code>/Inbox/Telegram</code>.
+              </p>
+              <div class="files-toolbar">
+                <button type="button" id="filesUp">Up</button>
+                <button type="button" id="filesReload">Reload</button>
+                <input id="newFolderName" type="text" placeholder="New folder name" />
+                <button type="button" id="createFolder">Create Folder</button>
+              </div>
+              <div class="files-toolbar">
+                <input id="fileUploadInput" type="file" />
+                <button type="button" id="uploadFile">Upload</button>
+              </div>
+              <div class="files-browser">
+                <select id="fileEntries" size="14" aria-label="Files and folders"></select>
+                <div id="fileDetails" class="output-box files-meta"></div>
+              </div>
+              <div class="files-actions">
+                <button type="button" id="openFolder">Open Folder</button>
+                <button type="button" id="downloadFile">Download</button>
+                <button type="button" id="renameEntry">Rename</button>
+                <button type="button" id="deleteEntry">Delete</button>
+                <button type="button" id="attachFile">Attach to Chat</button>
+              </div>
+              <div id="filesStatus" class="output-box short-hint" aria-live="polite"></div>
             </section>
           </div>
 
@@ -797,11 +868,18 @@
       const taskStateEl = document.getElementById("taskState");
       const configVerifyResultEl = document.getElementById("configVerifyResult");
       const tabChatEl = document.getElementById("tab-chat");
+      const tabFilesEl = document.getElementById("tab-files");
       const tabDiagnosticsEl = document.getElementById("tab-diagnostics");
       const tabConfigEl = document.getElementById("tab-config");
       const navChatEl = document.getElementById("navChat");
+      const navFilesEl = document.getElementById("navFiles");
       const navDiagnosticsEl = document.getElementById("navDiagnostics");
       const navConfigEl = document.getElementById("navConfig");
+      const fileEntriesEl = document.getElementById("fileEntries");
+      const fileDetailsEl = document.getElementById("fileDetails");
+      const filesStatusEl = document.getElementById("filesStatus");
+      const fileUploadInputEl = document.getElementById("fileUploadInput");
+      const newFolderNameEl = document.getElementById("newFolderName");
       /**
        * Optional client-side cap on how long to read the SSE stream (ms).
        * 0 = wait until the server closes the stream (recommended for Cursor agent runs).
@@ -815,6 +893,9 @@
       })();
       let taskPollTimer = null;
       let diagLogsPollTimer = null;
+      let currentFileParentId = null;
+      let currentFilePath = "/";
+      const fileParentStack = [];
 
       apiInput.value = defaultApi;
       tokenInput.value = defaultToken;
@@ -825,17 +906,24 @@
        */
       function showTab(name) {
         const isChat = name === "chat";
+        const isFiles = name === "files";
         const isDiagnostics = name === "diagnostics";
         const isConfig = name === "config";
         tabChatEl.classList.toggle("active", isChat);
+        tabFilesEl.classList.toggle("active", isFiles);
         tabDiagnosticsEl.classList.toggle("active", isDiagnostics);
         tabConfigEl.classList.toggle("active", isConfig);
         navChatEl.classList.toggle("active", isChat);
+        navFilesEl.classList.toggle("active", isFiles);
         navDiagnosticsEl.classList.toggle("active", isDiagnostics);
         navConfigEl.classList.toggle("active", isConfig);
         navChatEl.setAttribute("aria-selected", isChat ? "true" : "false");
+        navFilesEl.setAttribute("aria-selected", isFiles ? "true" : "false");
         navDiagnosticsEl.setAttribute("aria-selected", isDiagnostics ? "true" : "false");
         navConfigEl.setAttribute("aria-selected", isConfig ? "true" : "false");
+        if (isFiles) {
+          loadFiles().catch((err) => setFilesStatus(String(err)));
+        }
         if (isConfig) {
           loadKragenYaml().catch(() => {});
           loadWorkerConfig().catch(() => {});
@@ -1028,6 +1116,7 @@
       }
 
       navChatEl.addEventListener("click", () => showTab("chat"));
+      navFilesEl.addEventListener("click", () => showTab("files"));
       navDiagnosticsEl.addEventListener("click", () => showTab("diagnostics"));
       navConfigEl.addEventListener("click", () => showTab("config"));
 
@@ -1186,6 +1275,199 @@
           }
         }
         throw lastError || new Error("Unknown request error");
+      }
+
+      function setFilesStatus(text) {
+        filesStatusEl.textContent = text;
+      }
+
+      function selectedFileEntry() {
+        const opt = fileEntriesEl.selectedOptions[0];
+        if (!opt) return null;
+        try {
+          return JSON.parse(opt.dataset.entry || "null");
+        } catch {
+          return null;
+        }
+      }
+
+      function renderFileDetails(entry) {
+        if (!entry) {
+          fileDetailsEl.textContent = `Path: ${currentFilePath}\nSelect an entry to inspect it.`;
+          return;
+        }
+        fileDetailsEl.textContent = [
+          `id=${entry.id}`,
+          `kind=${entry.kind}`,
+          `name=${entry.name}`,
+          `path=${entry.path_cache}`,
+          `size=${entry.size_bytes ?? "-"}`,
+          `mime=${entry.mime_type || "-"}`,
+          `source=${entry.source_type}`,
+          `hash=${entry.content_hash || "-"}`,
+          `uri=${entry.uri || "-"}`,
+        ].join("\n");
+      }
+
+      async function loadFiles() {
+        const wid = workspaceSelect.value;
+        if (!wid) {
+          fileEntriesEl.innerHTML = "";
+          renderFileDetails(null);
+          setFilesStatus("Select a workspace first.");
+          return;
+        }
+        const params = new URLSearchParams({ workspace_id: wid });
+        if (currentFileParentId) params.set("parent_id", currentFileParentId);
+        const entries = await fetchJson(`/files?${params.toString()}`, {
+          headers: authHeaders(false),
+        });
+        fileEntriesEl.innerHTML = "";
+        for (const entry of entries) {
+          const opt = document.createElement("option");
+          opt.value = entry.id;
+          opt.dataset.entry = JSON.stringify(entry);
+          const marker = entry.kind === "folder" ? "[dir] " : "[file]";
+          const size = entry.size_bytes === null || entry.size_bytes === undefined ? "" : ` ${entry.size_bytes}b`;
+          opt.textContent = `${marker} ${entry.name}${size}`;
+          fileEntriesEl.appendChild(opt);
+        }
+        renderFileDetails(null);
+        setFilesStatus(`Loaded ${entries.length} item(s) from ${currentFilePath}.`);
+      }
+
+      async function createFolderFromUi() {
+        const wid = workspaceSelect.value;
+        const name = newFolderNameEl.value.trim();
+        if (!wid) throw new Error("Select a workspace first.");
+        if (!name) throw new Error("Folder name is empty.");
+        await fetchJson(
+          "/files/folders",
+          {
+            method: "POST",
+            headers: authHeaders(true),
+            body: JSON.stringify({
+              workspace_id: wid,
+              parent_id: currentFileParentId,
+              name,
+            }),
+          },
+          1
+        );
+        newFolderNameEl.value = "";
+        await loadFiles();
+      }
+
+      async function uploadFileFromUi() {
+        const wid = workspaceSelect.value;
+        const file = fileUploadInputEl.files && fileUploadInputEl.files[0];
+        if (!wid) throw new Error("Select a workspace first.");
+        if (!file) throw new Error("Choose a file first.");
+        const body = new FormData();
+        body.set("workspace_id", wid);
+        if (currentFileParentId) body.set("parent_id", currentFileParentId);
+        body.set("create_document", "true");
+        body.set("file", file);
+        const response = await fetch(`${apiBase()}/files/upload`, {
+          method: "POST",
+          headers: { Authorization: authHeaders(false).Authorization },
+          body,
+        });
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
+        }
+        fileUploadInputEl.value = "";
+        await loadFiles();
+      }
+
+      async function openSelectedFolder() {
+        const entry = selectedFileEntry();
+        if (!entry) throw new Error("Select a folder first.");
+        if (entry.kind !== "folder") throw new Error("Selected entry is not a folder.");
+        fileParentStack.push({ id: currentFileParentId, path: currentFilePath });
+        currentFileParentId = entry.id;
+        currentFilePath = entry.path_cache;
+        await loadFiles();
+      }
+
+      async function goUpFiles() {
+        const previous = fileParentStack.pop();
+        if (!previous) {
+          currentFileParentId = null;
+          currentFilePath = "/";
+        } else {
+          currentFileParentId = previous.id;
+          currentFilePath = previous.path;
+        }
+        await loadFiles();
+      }
+
+      async function renameSelectedEntry() {
+        const wid = workspaceSelect.value;
+        const entry = selectedFileEntry();
+        if (!wid) throw new Error("Select a workspace first.");
+        if (!entry) throw new Error("Select an entry first.");
+        const name = window.prompt("New name", entry.name);
+        if (!name || !name.trim()) return;
+        await fetchJson(
+          `/files/${entry.id}?workspace_id=${encodeURIComponent(wid)}`,
+          {
+            method: "PATCH",
+            headers: authHeaders(true),
+            body: JSON.stringify({ name: name.trim() }),
+          },
+          1
+        );
+        await loadFiles();
+      }
+
+      async function deleteSelectedEntry() {
+        const wid = workspaceSelect.value;
+        const entry = selectedFileEntry();
+        if (!wid) throw new Error("Select a workspace first.");
+        if (!entry) throw new Error("Select an entry first.");
+        if (!window.confirm(`Delete ${entry.path_cache}?`)) return;
+        await fetchJson(
+          `/files/${entry.id}?workspace_id=${encodeURIComponent(wid)}`,
+          {
+            method: "DELETE",
+            headers: authHeaders(false),
+          },
+          1
+        );
+        await loadFiles();
+      }
+
+      async function downloadSelectedEntry() {
+        const wid = workspaceSelect.value;
+        const entry = selectedFileEntry();
+        if (!wid) throw new Error("Select a workspace first.");
+        if (!entry) throw new Error("Select a file first.");
+        if (entry.kind !== "file") throw new Error("Selected entry is not a file.");
+        const response = await fetch(
+          `${apiBase()}/files/${entry.id}/download?workspace_id=${encodeURIComponent(wid)}`,
+          { headers: authHeaders(false) }
+        );
+        if (!response.ok) {
+          throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
+        }
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = entry.name;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function attachSelectedEntryToChat() {
+        const entry = selectedFileEntry();
+        if (!entry) throw new Error("Select an entry first.");
+        const line = `[file:${entry.id}] ${entry.path_cache}`;
+        messageInput.value = messageInput.value
+          ? `${messageInput.value.trimEnd()}\n${line}`
+          : line;
+        showTab("chat");
       }
 
       async function loadWorkspaces() {
@@ -1512,8 +1794,12 @@
       };
       workspaceSelect.onchange = async () => {
         try {
+          currentFileParentId = null;
+          currentFilePath = "/";
+          fileParentStack.length = 0;
           await loadSessions();
           await loadMessages();
+          if (tabFilesEl.classList.contains("active")) await loadFiles();
         } catch (err) {
           setStatus(String(err));
         }
@@ -1556,6 +1842,72 @@
       };
       document.getElementById("clearPanels").onclick = () => {
         clearPanels();
+      };
+      fileEntriesEl.onchange = () => {
+        renderFileDetails(selectedFileEntry());
+      };
+      document.getElementById("filesReload").onclick = async () => {
+        try {
+          await loadFiles();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("filesUp").onclick = async () => {
+        try {
+          await goUpFiles();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("createFolder").onclick = async () => {
+        try {
+          await createFolderFromUi();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("uploadFile").onclick = async () => {
+        try {
+          await uploadFileFromUi();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("openFolder").onclick = async () => {
+        try {
+          await openSelectedFolder();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("downloadFile").onclick = async () => {
+        try {
+          await downloadSelectedEntry();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("renameEntry").onclick = async () => {
+        try {
+          await renameSelectedEntry();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("deleteEntry").onclick = async () => {
+        try {
+          await deleteSelectedEntry();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("attachFile").onclick = () => {
+        try {
+          attachSelectedEntryToChat();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
       };
       document.getElementById("checkCursorAuth").onclick = async () => {
         try {

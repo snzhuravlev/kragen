@@ -19,6 +19,7 @@ import httpx
 import uvicorn
 from botocore.config import Config
 from fastapi import FastAPI, HTTPException, Request
+from sqlalchemy import select
 
 from kragen.channels.telegram_api import (
     tg_call as _tg_call,
@@ -26,6 +27,7 @@ from kragen.channels.telegram_api import (
     tg_get_updates as _tg_get_updates,
     tg_send_processing_stub as _tg_send_processing_stub,
     tg_send_text as _tg_send_text,
+    tg_set_commands as _tg_set_commands,
     tg_set_webhook as _tg_set_webhook,
 )
 from kragen.channels.telegram_settings import TelegramChannelSettings, read_settings
@@ -40,24 +42,63 @@ from kragen.channels.telegram_utils import (
 from kragen.config import get_settings as get_kragen_settings
 from kragen.db.session import async_session_factory
 from kragen.logging_config import configure_logging, get_logger
-from kragen.models.core import Message
+from kragen.models.core import Message, Session, Task
+from kragen.services import file_storage
 from kragen.services.telegram_bindings import (
     claim_message_processing,
     cleanup_processed_messages,
     reap_stuck_processing_messages,
     get_binding_by_chat_id,
-    is_stale_telegram_update,
     mark_message_status,
     mark_update_processed,
     resolve_or_create_binding,
     start_new_chat_session,
 )
-from kragen.storage import object_store
 
 logger = get_logger(__name__)
 
 _STREAM_EDIT_INTERVAL_SECONDS = 1.0
 _S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
+_COMMAND_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    (
+        "Chat and sessions",
+        (
+            ("/start", "connect this chat to Kragen"),
+            ("/new", "start a new session"),
+            ("/whoami", "show chat, session, workspace and user binding"),
+            ("/sessions", "list recent sessions"),
+            ("/tasks", "list recent tasks for the current session"),
+        ),
+    ),
+    (
+        "Storage",
+        (
+            ("/files", "list root files and folders"),
+            ("/ls", "alias for /files"),
+            ("/mkdir <name>", "create a root folder"),
+            ("send document", "upload a Telegram document into /Inbox/Telegram"),
+        ),
+    ),
+    (
+        "Help",
+        (
+            ("/help", "show this help"),
+            ("/commands", "show all commands with descriptions"),
+        ),
+    ),
+)
+_BOT_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("start", "Connect this chat to Kragen"),
+    ("new", "Start a new session"),
+    ("whoami", "Show chat/session binding"),
+    ("sessions", "List recent sessions"),
+    ("tasks", "List recent tasks"),
+    ("files", "List root files and folders"),
+    ("ls", "Alias for /files"),
+    ("mkdir", "Create a root folder"),
+    ("help", "Show help"),
+    ("commands", "Show all commands"),
+)
 
 
 def _read_settings() -> TelegramChannelSettings:
@@ -291,6 +332,194 @@ async def _handle_command_whoami(
     )
 
 
+async def _handle_command_sessions(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+) -> str:
+    """Return sessions list with title and short description."""
+    async with async_session_factory() as db:
+        await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        result = await db.execute(
+            select(Session.id, Session.title, Session.updated_at, Session.created_at)
+            .where(Session.user_id == settings.auth_user_id)
+            .where(Session.workspace_id == settings.default_workspace_id)
+            .order_by(Session.updated_at.desc())
+            .limit(50)
+        )
+        await db.commit()
+    rows = result.fetchall()
+    if not rows:
+        return "*Sessions*\n- `(empty)`"
+    lines = ["*Sessions*"]
+    for idx, row in enumerate(rows, start=1):
+        sid = str(row[0])
+        title = row[1] or "Untitled session"
+        updated_at = row[2].isoformat() if row[2] is not None else "n/a"
+        created_at = row[3].isoformat() if row[3] is not None else "n/a"
+        lines.append(f"- *{idx}.* `{sid}`")
+        lines.append(f"  title: {_escape_md(title)}")
+        lines.append(
+            "  description: "
+            + _escape_md(f"created {created_at}, updated {updated_at}")
+        )
+    return "\n".join(lines)
+
+
+async def _handle_command_tasks(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+) -> str:
+    """Return tasks list with status and short description."""
+    async with async_session_factory() as db:
+        binding = await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        result = await db.execute(
+            select(Task.id, Task.status, Task.error, Task.created_at, Task.updated_at)
+            .where(Task.session_id == binding.session_id)
+            .order_by(Task.created_at.desc())
+            .limit(50)
+        )
+        await db.commit()
+    rows = result.fetchall()
+    if not rows:
+        return "*Tasks*\n- `(empty)`"
+    lines = ["*Tasks*"]
+    for idx, row in enumerate(rows, start=1):
+        tid = str(row[0])
+        status = str(row[1])
+        error = str(row[2]) if row[2] else "none"
+        created_at = row[3].isoformat() if row[3] is not None else "n/a"
+        updated_at = row[4].isoformat() if row[4] is not None else "n/a"
+        lines.append(f"- *{idx}.* `{tid}`")
+        lines.append(f"  title: `{_escape_md(status)}`")
+        lines.append(
+            "  description: "
+            + _escape_md(f"created {created_at}, updated {updated_at}, error {error}")
+        )
+    return "\n".join(lines)
+
+
+async def _handle_command_files(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+) -> str:
+    """Return root file tree entries for the bound workspace."""
+    async with async_session_factory() as db:
+        await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        entries = await file_storage.list_entries(
+            db,
+            workspace_id=settings.default_workspace_id,
+            parent_id=None,
+        )
+        await db.commit()
+    if not entries:
+        return "*Files*\n- `(empty)`"
+    lines = ["*Files*"]
+    for entry in entries[:30]:
+        marker = "folder" if entry.kind == "folder" else "file"
+        size = f", {entry.size_bytes} bytes" if entry.size_bytes is not None else ""
+        lines.append(
+            f"- `{entry.id}` {_escape_md(entry.name)} "
+            f"({_escape_md(marker)}{_escape_md(size)})"
+        )
+    return "\n".join(lines)
+
+
+async def _handle_command_mkdir(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    name: str,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+) -> str:
+    """Create a root folder from Telegram."""
+    async with async_session_factory() as db:
+        await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        entry = await file_storage.create_folder(
+            db,
+            workspace_id=settings.default_workspace_id,
+            parent_id=None,
+            name=name,
+            created_by_user_id=settings.auth_user_id,
+            source_type="telegram",
+            metadata={"telegram_chat_id": chat_id},
+        )
+        await db.commit()
+    return f"Папка создана: `{_escape_md(entry.path_cache)}`"
+
+
+def _help_text() -> str:
+    """Return all supported commands grouped by area."""
+    lines = ["*Available commands*"]
+    for section, commands in _COMMAND_SECTIONS:
+        lines.append("")
+        lines.append(f"*{_escape_md(section)}*")
+        for command, description in commands:
+            lines.append(f"- `{_escape_md(command)}` — {_escape_md(description)}")
+    return "\n".join(lines)
+
+
+def _bot_commands_payload() -> list[dict[str, str]]:
+    """Return Telegram Bot API command descriptors."""
+    return [
+        {"command": command, "description": description}
+        for command, description in _BOT_COMMANDS
+    ]
+
+
+def _escape_md(value: str) -> str:
+    """Escape Telegram Markdown special chars in plain text fragments."""
+    escaped = value.replace("\\", "\\\\")
+    for ch in ("`", "*", "_", "[", "]"):
+        escaped = escaped.replace(ch, f"\\{ch}")
+    return escaped
+
+
 async def _handle_user_text(
     tg_client: httpx.AsyncClient,
     kragen_client: httpx.AsyncClient,
@@ -314,12 +543,6 @@ async def _handle_user_text(
             first_name=first_name,
             last_name=last_name,
         )
-        if is_stale_telegram_update(
-            last_update_id=binding.last_update_id,
-            incoming_update_id=update_id,
-        ):
-            await db.rollback()
-            return
         await db.commit()
 
     metadata = {
@@ -479,12 +702,6 @@ async def _handle_user_document(
             first_name=first_name,
             last_name=last_name,
         )
-        if is_stale_telegram_update(
-            last_update_id=binding.last_update_id,
-            incoming_update_id=update_id,
-        ):
-            await db.rollback()
-            return
         await db.commit()
 
     get_file_payload = await _tg_call(
@@ -507,22 +724,67 @@ async def _handle_user_document(
         raise RuntimeError("Downloaded Telegram document is empty")
 
     safe_name = _safe_filename(file_name)
-    key = (
-        f"workspaces/{binding.workspace_id}/telegram/{chat_id}/"
-        f"{file_unique_id}-{safe_name}"
-    )
-    uri = await object_store.put_bytes(
-        key=key,
-        body=file_bytes,
-        content_type=mime_type,
-    )
+    async with async_session_factory() as db:
+        inbox = await file_storage.ensure_folder_path(
+            db,
+            workspace_id=binding.workspace_id,
+            path="/Inbox/Telegram",
+            created_by_user_id=binding.user_id,
+            source_type="telegram",
+        )
+        try:
+            storage_entry, document_row = await file_storage.create_file_from_bytes(
+                db,
+                workspace_id=binding.workspace_id,
+                parent_id=inbox.id if inbox is not None else None,
+                name=safe_name,
+                body=file_bytes,
+                mime_type=mime_type,
+                created_by_user_id=binding.user_id,
+                source_type="telegram",
+                metadata={
+                    "telegram_chat_id": chat_id,
+                    "telegram_message_id": message_id,
+                    "telegram_update_id": update_id,
+                    "telegram_username": username,
+                    "telegram_document_file_id": file_id,
+                    "telegram_document_file_unique_id": file_unique_id,
+                    "telegram_document_file_name": file_name,
+                },
+                create_document=True,
+            )
+        except file_storage.StorageEntryConflict:
+            stem, ext = os.path.splitext(safe_name)
+            retry_name = f"{stem}-{file_unique_id[:12]}{ext}"
+            storage_entry, document_row = await file_storage.create_file_from_bytes(
+                db,
+                workspace_id=binding.workspace_id,
+                parent_id=inbox.id if inbox is not None else None,
+                name=retry_name,
+                body=file_bytes,
+                mime_type=mime_type,
+                created_by_user_id=binding.user_id,
+                source_type="telegram",
+                metadata={
+                    "telegram_chat_id": chat_id,
+                    "telegram_message_id": message_id,
+                    "telegram_update_id": update_id,
+                    "telegram_username": username,
+                    "telegram_document_file_id": file_id,
+                    "telegram_document_file_unique_id": file_unique_id,
+                    "telegram_document_file_name": file_name,
+                },
+                create_document=True,
+            )
+        await db.commit()
 
     user_text = text or f"[document] {file_name}"
     assistant_text = (
-        "Документ сохранён в объектное хранилище.\n"
+        "Документ сохранён в файловое хранилище.\n"
         f"File: {file_name}\n"
         f"Size: {len(file_bytes)} bytes\n"
-        f"URI: {uri}"
+        f"Path: {storage_entry.path_cache}\n"
+        f"ID: {storage_entry.id}"
     )
     metadata = {
         "channel": "telegram",
@@ -533,7 +795,9 @@ async def _handle_user_document(
         "telegram_document_file_id": file_id,
         "telegram_document_file_name": file_name,
         "telegram_document_mime_type": mime_type,
-        "telegram_document_uri": uri,
+        "storage_entry_id": str(storage_entry.id),
+        "document_id": str(document_row.id) if document_row is not None else None,
+        "telegram_document_uri": storage_entry.uri,
     }
     await _persist_direct_telegram_exchange(
         session_id=binding.session_id,
@@ -603,7 +867,8 @@ async def _handle_update(
         first_name = str(first_name_value) if first_name_value is not None else None
         last_name = str(last_name_value) if last_name_value is not None else None
 
-    command = text.strip().lower() if isinstance(text, str) else ""
+    command_text = text.strip() if isinstance(text, str) else ""
+    command = command_text.lower()
     async with async_session_factory() as db:
         claimed = await claim_message_processing(
             db,
@@ -640,9 +905,9 @@ async def _handle_update(
                 chat_id=chat_id,
                 text=(
                     "Connected to Kragen.\n"
-                    "Commands:\n"
-                    "/new - start a new session\n"
-                    "Send any text to run it via Kragen worker."
+                    "Use /commands to see all commands.\n"
+                    "Send any text to run it via Kragen worker, or send a document "
+                    "to store it in /Inbox/Telegram."
                 ),
             )
             async with async_session_factory() as db:
@@ -687,6 +952,172 @@ async def _handle_update(
                 last_name=last_name,
             )
             await _tg_send_text(tg_client, settings=settings, chat_id=chat_id, text=message_text)
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command == "/sessions":
+            message_text = await _handle_command_sessions(
+                settings=settings,
+                chat_id=chat_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command == "/tasks":
+            message_text = await _handle_command_tasks(
+                settings=settings,
+                chat_id=chat_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command in {"/files", "/ls"}:
+            message_text = await _handle_command_files(
+                settings=settings,
+                chat_id=chat_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command == "/mkdir" or command.startswith("/mkdir "):
+            folder_name = command_text.removeprefix("/mkdir").strip()
+            if not folder_name:
+                message_text = "Usage: `/mkdir folder-name`"
+            else:
+                try:
+                    message_text = await _handle_command_mkdir(
+                        settings=settings,
+                        chat_id=chat_id,
+                        name=folder_name,
+                        username=username,
+                        first_name=first_name,
+                        last_name=last_name,
+                    )
+                except file_storage.FileStorageError as exc:
+                    message_text = f"Не удалось создать папку: {_escape_md(str(exc))}"
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command in {"/help", "/commands"}:
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=_help_text(),
+                parse_mode="Markdown",
+            )
             async with async_session_factory() as db:
                 maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
                 if maybe_binding is not None:
@@ -769,6 +1200,17 @@ async def _handle_update_with_timeout(
     """Run one update handler with timeout so one stuck task won't block others."""
     update_id_val = update.get("update_id")
     update_id = str(update_id_val) if update_id_val is not None else "unknown"
+    message = update.get("message")
+    chat_id: int | None = None
+    message_id: int | None = None
+    if isinstance(message, dict):
+        chat = message.get("chat")
+        chat_id_val = chat.get("id") if isinstance(chat, dict) else None
+        message_id_val = message.get("message_id")
+        if isinstance(chat_id_val, int):
+            chat_id = chat_id_val
+        if isinstance(message_id_val, int):
+            message_id = message_id_val
     try:
         await asyncio.wait_for(
             _handle_update(
@@ -781,6 +1223,28 @@ async def _handle_update_with_timeout(
         )
     except asyncio.TimeoutError:
         logger.warning("telegram_update_timeout", update_id=update_id)
+        if chat_id is not None and message_id is not None:
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="failed",
+                    error="TimeoutError: telegram update timed out",
+                )
+                await db.commit()
+            try:
+                await _tg_send_text(
+                    tg_client,
+                    settings=settings,
+                    chat_id=chat_id,
+                    text=(
+                        "Запрос выполнялся слишком долго и был остановлен. "
+                        "Попробуйте повторить короче."
+                    ),
+                )
+            except Exception:
+                logger.debug("telegram_timeout_notification_failed", update_id=update_id)
     except Exception:  # noqa: BLE001
         logger.exception("telegram_update_wrapper_failed", update_id=update_id)
 
@@ -800,6 +1264,11 @@ async def run_telegram_channel() -> None:
     pending_updates: set[asyncio.Task[None]] = set()
     try:
         async with httpx.AsyncClient() as tg_client, httpx.AsyncClient() as kragen_client:
+            await _tg_set_commands(
+                tg_client,
+                settings=settings,
+                commands=_bot_commands_payload(),
+            )
             while True:
                 try:
                     updates = await _tg_get_updates(
@@ -907,6 +1376,11 @@ async def run_telegram_channel_webhook() -> None:
     @app.on_event("startup")
     async def _startup() -> None:
         async with httpx.AsyncClient() as tg_client:
+            await _tg_set_commands(
+                tg_client,
+                settings=settings,
+                commands=_bot_commands_payload(),
+            )
             await _tg_set_webhook(tg_client, settings=settings)
         app.state.worker_task = asyncio.create_task(_webhook_worker(queue=queue, settings=settings))
         app.state.cleanup_task = asyncio.create_task(_dedup_cleanup_worker(settings=settings))

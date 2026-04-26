@@ -63,6 +63,21 @@ async def put_bytes(*, key: str, body: bytes, content_type: str | None = None) -
     return f"s3://{settings.storage.bucket}/{key}"
 
 
+async def get_bytes(*, key: str) -> bytes:
+    """Download bytes from the configured bucket by object key."""
+    settings = get_settings()
+    async with _session().client(
+        "s3",
+        endpoint_url=settings.storage.endpoint_url,
+        aws_access_key_id=settings.storage.access_key,
+        aws_secret_access_key=settings.storage.secret_key,
+        config=_S3_PATH_STYLE_CONFIG,
+    ) as client:
+        response = await client.get_object(Bucket=settings.storage.bucket, Key=key)
+        async with response["Body"] as stream:
+            return await stream.read()
+
+
 def sha256_hex(data: bytes) -> str:
     """Return hex digest for content-addressed metadata."""
     return hashlib.sha256(data).hexdigest()

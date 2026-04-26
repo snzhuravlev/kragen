@@ -13,6 +13,7 @@ from kragen.models.core import (
     User,
     Workspace,
 )
+from kragen.models.storage import StorageEntry
 
 __all__ = [
     "Base",
@@ -26,4 +27,5 @@ __all__ = [
     "Task",
     "Artifact",
     "AuditEvent",
+    "StorageEntry",
 ]

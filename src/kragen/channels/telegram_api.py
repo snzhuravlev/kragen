@@ -68,17 +68,21 @@ async def tg_send_text(
     settings: TelegramChannelSettings,
     chat_id: int,
     text: str,
+    parse_mode: str | None = None,
 ) -> None:
     for chunk in split_telegram_message(text):
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         await tg_call(
             client,
             settings=settings,
             method="sendMessage",
-            payload={
-                "chat_id": chat_id,
-                "text": chunk,
-                "disable_web_page_preview": True,
-            },
+            payload=payload,
         )
 
 
@@ -128,6 +132,21 @@ async def tg_send_processing_stub(
     return None
 
 
+async def tg_set_commands(
+    client: httpx.AsyncClient,
+    *,
+    settings: TelegramChannelSettings,
+    commands: list[dict[str, str]],
+) -> None:
+    """Register slash commands shown by Telegram clients."""
+    await tg_call(
+        client,
+        settings=settings,
+        method="setMyCommands",
+        payload={"commands": commands},
+    )
+
+
 async def tg_set_webhook(
     client: httpx.AsyncClient,
     *,
@@ -145,6 +164,10 @@ async def tg_set_webhook(
         method="setWebhook",
         payload={
             "url": settings.webhook_public_url.rstrip("/") + normalized_path,
-            **({"secret_token": settings.webhook_secret_token} if settings.webhook_secret_token else {}),
+            **(
+                {"secret_token": settings.webhook_secret_token}
+                if settings.webhook_secret_token
+                else {}
+            ),
         },
     )
