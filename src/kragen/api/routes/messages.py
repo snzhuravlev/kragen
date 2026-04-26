@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from kragen.api.deps import CorrelationId, DbSession, UserId
+from kragen.api.deps import CorrelationId, DbSession, UserId, ensure_workspace_access
 from kragen.api.schemas import MessageCreate, MessageOut, MessagePostResponse, TaskOut
 from kragen.models.core import Message, Session, Task
 from kragen.services import orchestrator
@@ -28,8 +28,7 @@ async def post_message(
     sess = result.scalar_one_or_none()
     if sess is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    if sess.user_id is not None and sess.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=sess.workspace_id)
 
     user_msg = Message(
         session_id=session_id,

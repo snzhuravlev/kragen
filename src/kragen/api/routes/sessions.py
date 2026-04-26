@@ -5,7 +5,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from kragen.api.deps import CorrelationId, DbSession, UserId
+from kragen.api.deps import CorrelationId, DbSession, UserId, ensure_workspace_access
 from kragen.api.schemas import MessageOut, SessionCreate, SessionOut
 from kragen.config import get_settings
 from kragen.models.core import Channel, Session
@@ -22,10 +22,13 @@ async def list_sessions(
     workspace_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[SessionOut]:
-    """List user sessions, optionally filtered by workspace."""
-    stmt = select(Session).where(Session.user_id == user_id)
+    """List sessions visible to the current user."""
+    stmt = select(Session)
     if workspace_id is not None:
+        await ensure_workspace_access(db, user_id=user_id, workspace_id=workspace_id)
         stmt = stmt.where(Session.workspace_id == workspace_id)
+    else:
+        stmt = stmt.where(Session.user_id == user_id)
     stmt = stmt.order_by(Session.updated_at.desc()).limit(limit)
     result = await db.execute(stmt)
     return list(result.scalars().all())
@@ -81,8 +84,7 @@ async def get_session(session_id: uuid.UUID, db: DbSession, user_id: UserId) -> 
     sess = result.scalar_one_or_none()
     if sess is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    if sess.user_id is not None and sess.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=sess.workspace_id)
     return sess
 
 
@@ -97,8 +99,7 @@ async def list_messages(
     sess = result.scalar_one_or_none()
     if sess is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    if sess.user_id is not None and sess.user_id != user_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=sess.workspace_id)
 
     from kragen.models.core import Message
 

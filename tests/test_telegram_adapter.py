@@ -8,6 +8,7 @@ from kragen.channels.telegram_adapter import (
     TelegramChannelSettings,
     _bot_commands_payload,
     _extract_message_payload,
+    _extract_storage_target_path,
     _health_payload,
     _help_text,
     _is_valid_webhook_secret,
@@ -93,3 +94,10 @@ def test_bot_commands_payload_registers_command_menu() -> None:
 
     assert {"commands", "help", "files", "ls", "mkdir"}.issubset(names)
     assert all(item["description"] for item in commands)
+
+
+def test_extract_storage_target_path_from_document_caption() -> None:
+    assert _extract_storage_target_path("положи этот файл в каталог /public") == "/public"
+    assert _extract_storage_target_path("save to /public/reports.") == "/public/reports"
+    assert _extract_storage_target_path("положи в /публичные/отчёты") == "/публичные/отчёты"
+    assert _extract_storage_target_path(None) == "/Inbox/Telegram"

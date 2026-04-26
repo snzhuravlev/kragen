@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -99,6 +100,7 @@ _BOT_COMMANDS: tuple[tuple[str, str], ...] = (
     ("help", "Show help"),
     ("commands", "Show all commands"),
 )
+_STORAGE_PATH_RE = re.compile(r"(?<!\S)(/[^\s`]+)")
 
 
 def _read_settings() -> TelegramChannelSettings:
@@ -520,6 +522,17 @@ def _escape_md(value: str) -> str:
     return escaped
 
 
+def _extract_storage_target_path(text: str | None) -> str:
+    """Extract an absolute storage folder path from a document caption."""
+    if not text:
+        return "/Inbox/Telegram"
+    match = _STORAGE_PATH_RE.search(text)
+    if match is None:
+        return "/Inbox/Telegram"
+    path = match.group(1).rstrip(".,;:!?)\"]'}")
+    return path or "/Inbox/Telegram"
+
+
 async def _handle_user_text(
     tg_client: httpx.AsyncClient,
     kragen_client: httpx.AsyncClient,
@@ -724,11 +737,12 @@ async def _handle_user_document(
         raise RuntimeError("Downloaded Telegram document is empty")
 
     safe_name = _safe_filename(file_name)
+    target_path = _extract_storage_target_path(text)
     async with async_session_factory() as db:
-        inbox = await file_storage.ensure_folder_path(
+        target_folder = await file_storage.ensure_folder_path(
             db,
             workspace_id=binding.workspace_id,
-            path="/Inbox/Telegram",
+            path=target_path,
             created_by_user_id=binding.user_id,
             source_type="telegram",
         )
@@ -736,7 +750,7 @@ async def _handle_user_document(
             storage_entry, document_row = await file_storage.create_file_from_bytes(
                 db,
                 workspace_id=binding.workspace_id,
-                parent_id=inbox.id if inbox is not None else None,
+                parent_id=target_folder.id if target_folder is not None else None,
                 name=safe_name,
                 body=file_bytes,
                 mime_type=mime_type,
@@ -750,6 +764,7 @@ async def _handle_user_document(
                     "telegram_document_file_id": file_id,
                     "telegram_document_file_unique_id": file_unique_id,
                     "telegram_document_file_name": file_name,
+                    "telegram_storage_target_path": target_path,
                 },
                 create_document=True,
             )
@@ -759,7 +774,7 @@ async def _handle_user_document(
             storage_entry, document_row = await file_storage.create_file_from_bytes(
                 db,
                 workspace_id=binding.workspace_id,
-                parent_id=inbox.id if inbox is not None else None,
+                parent_id=target_folder.id if target_folder is not None else None,
                 name=retry_name,
                 body=file_bytes,
                 mime_type=mime_type,
@@ -773,6 +788,7 @@ async def _handle_user_document(
                     "telegram_document_file_id": file_id,
                     "telegram_document_file_unique_id": file_unique_id,
                     "telegram_document_file_name": file_name,
+                    "telegram_storage_target_path": target_path,
                 },
                 create_document=True,
             )
