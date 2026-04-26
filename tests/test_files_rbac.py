@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from kragen.api.deps import FileTaskAuth
 from kragen.api.routes import files
 from kragen.models.core import Artifact
 from kragen.models.memory import Document
@@ -142,7 +143,10 @@ async def test_upload_file_checks_workspace_before_storage(monkeypatch: pytest.M
     monkeypatch.setattr(files, "write_audit", fake_write_audit)
 
     db = _Db()
-    returned = await files.upload_file(db, user_id, "cid", workspace_id, file=_Upload())
+    task_auth = FileTaskAuth.from_user_id(user_id)
+    returned = await files.upload_file(
+        db, task_auth, "cid", workspace_id=workspace_id, file=_Upload()
+    )
 
     assert returned is entry
     assert events[0].startswith("rbac:")

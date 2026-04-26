@@ -121,6 +121,9 @@ class FileImportSettings(BaseModel):
     # If non-empty, remote host must match one of these suffixes (e.g. "postgresql.org").
     # Empty list = allow all hosts (suitable for local dev only).
     allowed_host_suffixes: list[str] = Field(default_factory=list)
+    # If non-empty, Content-Type must start with one of these (e.g. "application/pdf").
+    # Empty = any MIME. When set, missing Content-Type is rejected.
+    allowed_mime_prefixes: list[str] = Field(default_factory=list)
 
 
 class WorkerSettings(BaseModel):

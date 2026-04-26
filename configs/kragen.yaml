@@ -19,6 +19,7 @@ api:
 #   max_bytes: 104857600
 #   timeout_seconds: 60
 #   allowed_host_suffixes: []  # e.g. [ "postgresql.org" ] in production; empty = any host (dev)
+#   allowed_mime_prefixes: []  # e.g. [ "application/pdf" ]; empty = any MIME
 
 database:
   # Keep secrets in environment (KRAGEN_DATABASE__URL).

@@ -38,6 +38,9 @@ def test_mint_and_decode_roundtrip() -> None:
     assert p.user_id == uid
     assert p.workspace_id == wid
     assert p.task_id == tid
+    assert p.scope == tt.FILE_TASK_SCOPE
+    assert p.can_write_file_tree()
+    assert p.can_import()
 
 
 def test_decode_returns_none_when_disabled() -> None:

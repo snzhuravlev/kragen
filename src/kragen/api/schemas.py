@@ -4,7 +4,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from typing import Self
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class SessionCreate(BaseModel):
@@ -135,11 +137,34 @@ class StorageFileImport(BaseModel):
 
     url: str = Field(..., min_length=8, max_length=4096)
     workspace_id: uuid.UUID
-    # Absolute logical folder path, e.g. /library/postgresql (not the Cursor --workspace path).
-    dest_folder_path: str = Field(..., min_length=1, max_length=4000)
-    # Optional file name; if omitted, derived from the response (Content-Disposition or URL path).
+    # Mode A: absolute logical folder path, e.g. /library/postgresql
+    dest_folder_path: str | None = Field(default=None, max_length=4000)
+    # Optional file name in mode A; if omitted, derived from the response (Content-Disposition or URL).
     filename: str | None = Field(default=None, max_length=512)
+    # Mode B: place file directly under an existing folder entry (parent_id + file_name).
+    parent_id: uuid.UUID | None = None
+    file_name: str | None = Field(default=None, min_length=1, max_length=512)
     create_document: bool = True
+
+    @model_validator(mode="after")
+    def one_destination_mode(self) -> Self:
+        has_path = self.dest_folder_path is not None and str(self.dest_folder_path).strip() != ""
+        has_parent = self.parent_id is not None
+        if has_path and has_parent:
+            raise ValueError("Use either dest_folder_path or parent_id+file_name, not both")
+        if has_parent:
+            if not self.file_name or not str(self.file_name).strip():
+                raise ValueError("file_name is required when parent_id is set")
+        elif not has_path:
+            raise ValueError("Provide dest_folder_path or (parent_id and file_name)")
+        return self
+
+
+class StorageFolderEnsure(BaseModel):
+    """Create missing folders for an absolute logical path (idempotent, like mkdir -p)."""
+
+    workspace_id: uuid.UUID
+    path: str = Field(..., min_length=1, max_length=4000)
 
 
 class StorageEntryUpdate(BaseModel):

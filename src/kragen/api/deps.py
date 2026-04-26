@@ -131,26 +131,35 @@ UserId = Annotated[uuid.UUID, Depends(get_user_id_for_dev)]
 
 
 @dataclass(frozen=True, slots=True)
-class FileImportAuth:
-    """Resolves a normal user or a short-lived task token for /files/import."""
+class FileTaskAuth:
+    """
+    Resolves a normal user or a short-lived task JWT (``files:import`` or ``files:task``).
+
+    For task tokens, ``can_write_file_tree`` is true only for ``files:task`` (folders ensure + upload).
+    """
 
     user_id: uuid.UUID
     # If set, the request body workspace_id must match (task token binding).
     task_workspace_id: uuid.UUID | None = None
+    can_write_file_tree: bool = True
+
+    @staticmethod
+    def from_user_id(uid: uuid.UUID) -> "FileTaskAuth":
+        return FileTaskAuth(user_id=uid, task_workspace_id=None, can_write_file_tree=True)
 
 
-async def get_file_import_auth(
+async def get_file_task_auth(
     authorization: Annotated[str | None, Header()] = None,
     x_dev_user_id: Annotated[str | None, Header(alias="X-Dev-User-ID")] = None,
-) -> FileImportAuth:
+) -> FileTaskAuth:
     """
-    Like ``get_user_id_for_dev`` but also accepts a ``kragen_task`` JWT with scope files:import.
+    Like ``get_user_id_for_dev`` but also accepts a ``kragen_task`` JWT (``files:import`` or ``files:task``).
     """
     if get_settings().auth.disabled:
         if x_dev_user_id:
-            return FileImportAuth(user_id=uuid.UUID(x_dev_user_id))
+            return FileTaskAuth.from_user_id(uuid.UUID(x_dev_user_id))
         if get_settings().auth.dev_user_id:
-            return FileImportAuth(user_id=uuid.UUID(get_settings().auth.dev_user_id))
+            return FileTaskAuth.from_user_id(uuid.UUID(get_settings().auth.dev_user_id))
         raise HTTPException(
             status_code=401,
             detail="AUTH_DISABLED requires X-Dev-User-ID or DEV_USER_ID",
@@ -161,12 +170,20 @@ async def get_file_import_auth(
     raw = authorization.removeprefix("Bearer ").strip()
     t_payload = task_token.try_decode_task_token(raw)
     if t_payload is not None:
-        return FileImportAuth(user_id=t_payload.user_id, task_workspace_id=t_payload.workspace_id)
+        return FileTaskAuth(
+            user_id=t_payload.user_id,
+            task_workspace_id=t_payload.workspace_id,
+            can_write_file_tree=t_payload.can_write_file_tree(),
+        )
     user_id = await require_bearer_user(authorization)
-    return FileImportAuth(user_id=user_id)
+    return FileTaskAuth.from_user_id(user_id)
 
 
-FileImportAuthDep = Annotated[FileImportAuth, Depends(get_file_import_auth)]
+FileTaskAuthDep = Annotated[FileTaskAuth, Depends(get_file_task_auth)]
+# Backwards alias for import routes
+FileImportAuth = FileTaskAuth
+FileImportAuthDep = FileTaskAuthDep
+get_file_import_auth = get_file_task_auth
 
 
 def is_admin_user(user_id: uuid.UUID) -> bool:

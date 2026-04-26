@@ -92,6 +92,8 @@ For the current MVP, **one** worker is recommended because task SSE is in-memory
 - The **Cursor Agent** CLI (`cursor agent`) needs a valid Cursor session: run **`cursor agent login`** for the service user or set **`CURSOR_API_KEY`**. The API logs and task stream add a hint when the worker prints `Authentication required`.
 - **MCP tool approval** can block the **`kragen-files`** server: enable the **`kragen-mcp-kragen-files`** plugin in `plugins.enabled` and allow that MCP server in Cursor if prompted.
 - For **`POST /files/import`**, set **`file_import.allowed_host_suffixes`** in production to trusted host suffixes (for example `postgresql.org`). An empty list allows any host and is only suitable for development.
+- Optional **`file_import.allowed_mime_prefixes`** (for example `application/pdf`, `application/`) restricts response `Content-Type`; when set, responses without a type are rejected.
+- **`POST /files/folders/ensure`** creates a full logical path (like **`/mkdir`** / `ensure_folder_path`). Task tokens with scope **`files:task`** may call import, folder create, ensure, and upload; **`files:import`**-only tokens may call **`POST /files/import`** only.
 - **Task-scoped tokens** (`worker.task_token_enabled`): the worker mints a short JWT for the task user, passes **`KRAGEN_TASK_TOKEN`**, **`KRAGEN_API_URL`**, and **`KRAGEN_WORKSPACE_ID`** into the subprocess and into the `kragen-files` MCP `env` so tools can call the import API without manual secrets.
 
 ## Secrets and security

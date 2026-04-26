@@ -156,8 +156,10 @@ def _build_prompt(
         "Logical storage paths (for example /library/postgresql) are entries in Kragen object storage; "
         "they are not local paths under the Cursor --workspace directory. "
         "To put a file from a known public URL into logical storage, use POST /files/import with a "
-        "Bearer token, or the kragen-files MCP import_url tool when that server is available. "
-        "When KRAGEN_TASK_TOKEN is set in the environment, use it as the Bearer value for the API.\n\n"
+        "Bearer token (or the kragen-files MCP import_url). Task tokens (files:task) also allow "
+        "POST /files/folders, POST /files/folders/ensure, and POST /files/upload (see MCP: "
+        "ensure_folder_path, upload_from_workspace). When KRAGEN_TASK_TOKEN is set, use it as the "
+        "Bearer value. KRAGEN_TASK_WORKSPACE_DIR is the Cursor on-disk workspace for uploads.\n\n"
     )
     return (
         "You are the execution agent for Kragen Web channel.\n"
@@ -636,6 +638,7 @@ async def run_cursor_worker(
                     "KRAGEN_API_URL": public_url,
                     "KRAGEN_TASK_TOKEN": tkn,
                     "KRAGEN_WORKSPACE_ID": str(workspace_id),
+                    "KRAGEN_TASK_WORKSPACE_DIR": str(ws_path),
                 }
                 await _inject_kragen_files_mcp_env(ws_path, task_env)
             except Exception as exc:  # noqa: BLE001

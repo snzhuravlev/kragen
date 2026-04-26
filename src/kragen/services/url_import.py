@@ -62,6 +62,25 @@ def _default_filename_from_url(path: str) -> str:
     return last if last and last not in ("/", ".") else "download.bin"
 
 
+def check_fetched_mime(
+    content_type: str | None, *, settings: FileImportSettings
+) -> None:
+    """Raise UrlImportError when Content-Type does not satisfy allowed_mime_prefixes."""
+    if not settings.allowed_mime_prefixes:
+        return
+    if not content_type:
+        raise UrlImportError(
+            "Response has no Content-Type, but file_import.allowed_mime_prefixes is set"
+        )
+    ok = any(
+        content_type.lower().startswith(p.lower().strip()) for p in settings.allowed_mime_prefixes if p
+    )
+    if not ok:
+        raise UrlImportError(
+            f"Content-Type {content_type!r} is not allowed by file_import.allowed_mime_prefixes"
+        )
+
+
 async def fetch_url_bytes(
     url: str,
     *,
@@ -128,4 +147,5 @@ async def fetch_url_bytes(
 
     if not name_hint:
         name_hint = _default_filename_from_url(parsed.path)
+    check_fetched_mime(content_type, settings=settings)
     return FetchedObject(body=bytes(body), content_type=content_type, filename_hint=name_hint)
