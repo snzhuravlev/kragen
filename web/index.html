@@ -444,31 +444,147 @@
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
       }
+      .files-header {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+        align-items: center;
+      }
+      .files-title {
+        display: grid;
+        gap: 0.25rem;
+      }
+      .files-title strong {
+        font-size: 1rem;
+      }
+      .files-title span {
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
       .files-toolbar,
-      .files-actions {
+      .files-actions,
+      .files-create-row {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 0.5rem;
       }
       .files-toolbar button,
-      .files-actions button {
+      .files-actions button,
+      .files-create-row button {
         width: auto;
-        min-width: 110px;
+        min-width: 96px;
         text-align: center;
+      }
+      .files-toolbar input,
+      .files-create-row input {
+        width: auto;
+      }
+      .files-pathbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.45rem 0.55rem;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #faf8f4;
+      }
+      .files-pathbar button {
+        width: auto;
+        min-width: 0;
+        padding: 0.28rem 0.45rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.78rem;
+      }
+      .files-pathbar .sep {
+        color: var(--muted);
       }
       .files-browser {
         display: grid;
-        grid-template-columns: minmax(220px, 0.85fr) 1fr;
+        grid-template-columns: minmax(420px, 1.35fr) minmax(260px, 0.65fr);
         gap: 0.75rem;
         min-height: 0;
       }
-      #fileEntries {
-        min-height: 280px;
+      .files-table-wrap {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #fff;
+        min-height: 360px;
+        overflow: auto;
+      }
+      .files-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.84rem;
+      }
+      .files-table th,
+      .files-table td {
+        padding: 0.48rem 0.55rem;
+        border-bottom: 1px solid #eee5d5;
+        text-align: left;
+        vertical-align: middle;
+      }
+      .files-table th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #f4ecdd;
+        color: var(--muted);
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .files-table tbody tr {
+        cursor: pointer;
+      }
+      .files-table tbody tr:hover,
+      .files-table tbody tr.selected {
+        background: #f6efe3;
+      }
+      .files-name-cell {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        min-width: 0;
+      }
+      .files-icon {
+        min-width: 3.2rem;
+        color: var(--muted);
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.72rem;
+      }
+      .files-name-text {
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .files-path {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: var(--muted);
+        font-size: 0.75rem;
       }
       .files-meta {
-        min-height: 280px;
+        min-height: 360px;
+      }
+      .files-detail-title {
+        margin: 0 0 0.55rem;
+        font-weight: 700;
+      }
+      .files-detail-grid {
+        display: grid;
+        grid-template-columns: minmax(5rem, 7rem) 1fr;
+        gap: 0.35rem 0.6rem;
+        font-size: 0.82rem;
+      }
+      .files-detail-grid .k {
+        color: var(--muted);
+      }
+      .files-empty {
+        padding: 2rem;
+        color: var(--muted);
+        text-align: center;
       }
       .field-help {
         margin: 0 0 0.35rem;
@@ -519,6 +635,10 @@
         .files-browser,
         .split {
           grid-template-columns: 1fr;
+        }
+        .files-header {
+          align-items: stretch;
+          flex-direction: column;
         }
       }
     </style>
@@ -656,31 +776,52 @@
 
           <div id="tab-files" class="tab-panel" role="tabpanel" aria-labelledby="navFiles">
             <section class="panel row">
-              <label>Files</label>
-              <p class="field-help">
-                Logical workspace file tree backed by object storage. Uploads here are visible to
-                Telegram uploads saved under <code>/Inbox/Telegram</code>.
-              </p>
-              <div class="files-toolbar">
-                <button type="button" id="filesUp">Up</button>
-                <button type="button" id="filesReload">Reload</button>
+              <div class="files-header">
+                <div class="files-title">
+                  <strong>Storage</strong>
+                  <span>Logical file tree backed by object storage. Telegram uploads use the same workspace.</span>
+                </div>
+                <div class="files-toolbar">
+                  <button type="button" id="filesUp">Up</button>
+                  <button type="button" id="filesReload">Reload</button>
+                  <button type="button" id="openFolder">Open</button>
+                  <button type="button" id="downloadFile">Download</button>
+                </div>
+              </div>
+
+              <div id="filesPathbar" class="files-pathbar" aria-label="Current storage path"></div>
+
+              <div class="files-create-row">
                 <input id="newFolderName" type="text" placeholder="New folder name" />
                 <button type="button" id="createFolder">Create Folder</button>
-              </div>
-              <div class="files-toolbar">
                 <input id="fileUploadInput" type="file" />
                 <button type="button" id="uploadFile">Upload</button>
+                <input id="fileSearch" type="search" placeholder="Filter current folder" />
               </div>
+
               <div class="files-browser">
-                <select id="fileEntries" size="14" aria-label="Files and folders"></select>
-                <div id="fileDetails" class="output-box files-meta"></div>
+                <div class="files-table-wrap">
+                  <table class="files-table" aria-label="Files and folders">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Kind</th>
+                        <th>Size</th>
+                        <th>Source</th>
+                        <th>Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody id="fileEntries"></tbody>
+                  </table>
+                </div>
+                <div id="fileDetails" class="output-box files-meta" aria-live="polite"></div>
               </div>
+
               <div class="files-actions">
-                <button type="button" id="openFolder">Open Folder</button>
-                <button type="button" id="downloadFile">Download</button>
                 <button type="button" id="renameEntry">Rename</button>
                 <button type="button" id="deleteEntry">Delete</button>
                 <button type="button" id="attachFile">Attach to Chat</button>
+                <button type="button" id="copyFilePath">Copy Path</button>
               </div>
               <div id="filesStatus" class="output-box short-hint" aria-live="polite"></div>
             </section>
@@ -878,8 +1019,10 @@
       const fileEntriesEl = document.getElementById("fileEntries");
       const fileDetailsEl = document.getElementById("fileDetails");
       const filesStatusEl = document.getElementById("filesStatus");
+      const filesPathbarEl = document.getElementById("filesPathbar");
       const fileUploadInputEl = document.getElementById("fileUploadInput");
       const newFolderNameEl = document.getElementById("newFolderName");
+      const fileSearchEl = document.getElementById("fileSearch");
       /**
        * Optional client-side cap on how long to read the SSE stream (ms).
        * 0 = wait until the server closes the stream (recommended for Cursor agent runs).
@@ -895,6 +1038,8 @@
       let diagLogsPollTimer = null;
       let currentFileParentId = null;
       let currentFilePath = "/";
+      let currentFileEntries = [];
+      let selectedFileEntryId = null;
       const fileParentStack = [];
 
       apiInput.value = defaultApi;
@@ -1282,37 +1427,214 @@
       }
 
       function selectedFileEntry() {
-        const opt = fileEntriesEl.selectedOptions[0];
-        if (!opt) return null;
-        try {
-          return JSON.parse(opt.dataset.entry || "null");
-        } catch {
-          return null;
+        return currentFileEntries.find((entry) => entry.id === selectedFileEntryId) || null;
+      }
+
+      function formatFileSize(bytes) {
+        if (bytes === null || bytes === undefined) return "-";
+        if (bytes < 1024) return `${bytes} B`;
+        const units = ["KB", "MB", "GB", "TB"];
+        let value = bytes / 1024;
+        let idx = 0;
+        while (value >= 1024 && idx < units.length - 1) {
+          value /= 1024;
+          idx += 1;
         }
+        return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[idx]}`;
+      }
+
+      function formatDate(value) {
+        if (!value) return "-";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleString();
+      }
+
+      function fileIcon(entry) {
+        return entry.kind === "folder" ? "[dir]" : "[file]";
+      }
+
+      function filteredFileEntries() {
+        const query = fileSearchEl.value.trim().toLowerCase();
+        if (!query) return currentFileEntries;
+        return currentFileEntries.filter((entry) =>
+          [entry.name, entry.path_cache, entry.mime_type, entry.source_type]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(query))
+        );
+      }
+
+      function renderPathbar() {
+        filesPathbarEl.innerHTML = "";
+        const rootBtn = document.createElement("button");
+        rootBtn.type = "button";
+        rootBtn.textContent = "/";
+        rootBtn.onclick = async () => {
+          try {
+            currentFileParentId = null;
+            currentFilePath = "/";
+            currentFileEntries = [];
+            selectedFileEntryId = null;
+            fileParentStack.length = 0;
+            fileSearchEl.value = "";
+            await loadFiles();
+          } catch (err) {
+            setFilesStatus(String(err));
+          }
+        };
+        filesPathbarEl.appendChild(rootBtn);
+
+        const ancestors = fileParentStack.filter((item) => item.path !== "/");
+        for (let idx = 0; idx < ancestors.length; idx += 1) {
+          const item = ancestors[idx];
+          const sep = document.createElement("span");
+          sep.className = "sep";
+          sep.textContent = "/";
+          filesPathbarEl.appendChild(sep);
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = item.path.split("/").filter(Boolean).pop() || item.path;
+          btn.onclick = async () => {
+            try {
+              const stackIndex = fileParentStack.indexOf(item);
+              currentFileParentId = item.id;
+              currentFilePath = item.path;
+              fileParentStack.splice(stackIndex);
+              await loadFiles();
+            } catch (err) {
+              setFilesStatus(String(err));
+            }
+          };
+          filesPathbarEl.appendChild(btn);
+        }
+
+        if (currentFilePath !== "/") {
+          const sep = document.createElement("span");
+          sep.className = "sep";
+          sep.textContent = "/";
+          filesPathbarEl.appendChild(sep);
+          const current = document.createElement("strong");
+          current.className = "files-path";
+          current.textContent = currentFilePath.split("/").filter(Boolean).pop() || currentFilePath;
+          filesPathbarEl.appendChild(current);
+        }
+      }
+
+      function renderFileTable() {
+        const entries = filteredFileEntries();
+        fileEntriesEl.innerHTML = "";
+        if (!entries.length) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 5;
+          td.className = "files-empty";
+          td.textContent = currentFileEntries.length
+            ? "No entries match the current filter."
+            : "This folder is empty. Create a folder or upload a file.";
+          tr.appendChild(td);
+          fileEntriesEl.appendChild(tr);
+          return;
+        }
+
+        for (const entry of entries) {
+          const tr = document.createElement("tr");
+          tr.className = entry.id === selectedFileEntryId ? "selected" : "";
+          tr.tabIndex = 0;
+          tr.onclick = () => selectFileEntry(entry.id);
+          tr.ondblclick = () => {
+            if (entry.kind === "folder") openEntry(entry).catch((err) => setFilesStatus(String(err)));
+            else downloadEntry(entry).catch((err) => setFilesStatus(String(err)));
+          };
+
+          const nameTd = document.createElement("td");
+          const nameWrap = document.createElement("div");
+          nameWrap.className = "files-name-cell";
+          const icon = document.createElement("span");
+          icon.className = "files-icon";
+          icon.textContent = fileIcon(entry);
+          const name = document.createElement("span");
+          name.className = "files-name-text";
+          name.textContent = entry.name;
+          nameWrap.appendChild(icon);
+          nameWrap.appendChild(name);
+          nameTd.appendChild(nameWrap);
+
+          const kindTd = document.createElement("td");
+          kindTd.textContent = entry.kind;
+          const sizeTd = document.createElement("td");
+          sizeTd.textContent = formatFileSize(entry.size_bytes);
+          const sourceTd = document.createElement("td");
+          sourceTd.textContent = entry.source_type || "-";
+          const updatedTd = document.createElement("td");
+          updatedTd.textContent = formatDate(entry.updated_at || entry.created_at);
+
+          tr.appendChild(nameTd);
+          tr.appendChild(kindTd);
+          tr.appendChild(sizeTd);
+          tr.appendChild(sourceTd);
+          tr.appendChild(updatedTd);
+          fileEntriesEl.appendChild(tr);
+        }
+      }
+
+      function selectFileEntry(entryId) {
+        selectedFileEntryId = entryId;
+        renderFileTable();
+        renderFileDetails(selectedFileEntry());
       }
 
       function renderFileDetails(entry) {
         if (!entry) {
-          fileDetailsEl.textContent = `Path: ${currentFilePath}\nSelect an entry to inspect it.`;
+          fileDetailsEl.innerHTML = "";
+          const title = document.createElement("div");
+          title.className = "files-detail-title";
+          title.textContent = currentFilePath;
+          const hint = document.createElement("div");
+          hint.className = "hint";
+          hint.textContent = "Select a file or folder to inspect it. Double-click folders to open.";
+          fileDetailsEl.appendChild(title);
+          fileDetailsEl.appendChild(hint);
           return;
         }
-        fileDetailsEl.textContent = [
-          `id=${entry.id}`,
-          `kind=${entry.kind}`,
-          `name=${entry.name}`,
-          `path=${entry.path_cache}`,
-          `size=${entry.size_bytes ?? "-"}`,
-          `mime=${entry.mime_type || "-"}`,
-          `source=${entry.source_type}`,
-          `hash=${entry.content_hash || "-"}`,
-          `uri=${entry.uri || "-"}`,
-        ].join("\n");
+        fileDetailsEl.innerHTML = "";
+        const title = document.createElement("div");
+        title.className = "files-detail-title";
+        title.textContent = `${fileIcon(entry)} ${entry.name}`;
+        const grid = document.createElement("div");
+        grid.className = "files-detail-grid";
+        const rows = [
+          ["Kind", entry.kind],
+          ["Path", entry.path_cache],
+          ["Size", formatFileSize(entry.size_bytes)],
+          ["MIME", entry.mime_type || "-"],
+          ["Source", entry.source_type || "-"],
+          ["Created", formatDate(entry.created_at)],
+          ["Updated", formatDate(entry.updated_at)],
+          ["Hash", entry.content_hash || "-"],
+          ["URI", entry.uri || "-"],
+          ["ID", entry.id],
+        ];
+        for (const [key, value] of rows) {
+          const k = document.createElement("div");
+          k.className = "k";
+          k.textContent = key;
+          const v = document.createElement("div");
+          v.className = "files-path";
+          v.textContent = value;
+          grid.appendChild(k);
+          grid.appendChild(v);
+        }
+        fileDetailsEl.appendChild(title);
+        fileDetailsEl.appendChild(grid);
       }
 
       async function loadFiles() {
         const wid = workspaceSelect.value;
         if (!wid) {
+          currentFileEntries = [];
+          selectedFileEntryId = null;
           fileEntriesEl.innerHTML = "";
+          filesPathbarEl.innerHTML = "";
           renderFileDetails(null);
           setFilesStatus("Select a workspace first.");
           return;
@@ -1322,18 +1644,18 @@
         const entries = await fetchJson(`/files?${params.toString()}`, {
           headers: authHeaders(false),
         });
-        fileEntriesEl.innerHTML = "";
-        for (const entry of entries) {
-          const opt = document.createElement("option");
-          opt.value = entry.id;
-          opt.dataset.entry = JSON.stringify(entry);
-          const marker = entry.kind === "folder" ? "[dir] " : "[file]";
-          const size = entry.size_bytes === null || entry.size_bytes === undefined ? "" : ` ${entry.size_bytes}b`;
-          opt.textContent = `${marker} ${entry.name}${size}`;
-          fileEntriesEl.appendChild(opt);
+        currentFileEntries = entries;
+        if (!currentFileEntries.some((entry) => entry.id === selectedFileEntryId)) {
+          selectedFileEntryId = null;
         }
-        renderFileDetails(null);
-        setFilesStatus(`Loaded ${entries.length} item(s) from ${currentFilePath}.`);
+        renderPathbar();
+        renderFileTable();
+        renderFileDetails(selectedFileEntry());
+        const folders = entries.filter((entry) => entry.kind === "folder").length;
+        const files = entries.length - folders;
+        setFilesStatus(
+          `Loaded ${entries.length} item(s) from ${currentFilePath}: ${folders} folder(s), ${files} file(s).`
+        );
       }
 
       async function createFolderFromUi() {
@@ -1380,14 +1702,19 @@
         await loadFiles();
       }
 
-      async function openSelectedFolder() {
-        const entry = selectedFileEntry();
+      async function openEntry(entry) {
         if (!entry) throw new Error("Select a folder first.");
         if (entry.kind !== "folder") throw new Error("Selected entry is not a folder.");
         fileParentStack.push({ id: currentFileParentId, path: currentFilePath });
         currentFileParentId = entry.id;
         currentFilePath = entry.path_cache;
+        selectedFileEntryId = null;
+        fileSearchEl.value = "";
         await loadFiles();
+      }
+
+      async function openSelectedFolder() {
+        await openEntry(selectedFileEntry());
       }
 
       async function goUpFiles() {
@@ -1399,6 +1726,8 @@
           currentFileParentId = previous.id;
           currentFilePath = previous.path;
         }
+        selectedFileEntryId = null;
+        fileSearchEl.value = "";
         await loadFiles();
       }
 
@@ -1438,9 +1767,8 @@
         await loadFiles();
       }
 
-      async function downloadSelectedEntry() {
+      async function downloadEntry(entry) {
         const wid = workspaceSelect.value;
-        const entry = selectedFileEntry();
         if (!wid) throw new Error("Select a workspace first.");
         if (!entry) throw new Error("Select a file first.");
         if (entry.kind !== "file") throw new Error("Selected entry is not a file.");
@@ -1460,6 +1788,10 @@
         URL.revokeObjectURL(url);
       }
 
+      async function downloadSelectedEntry() {
+        await downloadEntry(selectedFileEntry());
+      }
+
       function attachSelectedEntryToChat() {
         const entry = selectedFileEntry();
         if (!entry) throw new Error("Select an entry first.");
@@ -1468,6 +1800,17 @@
           ? `${messageInput.value.trimEnd()}\n${line}`
           : line;
         showTab("chat");
+      }
+
+      async function copySelectedFilePath() {
+        const entry = selectedFileEntry();
+        const value = entry ? entry.path_cache : currentFilePath;
+        if (navigator.clipboard) {
+          await navigator.clipboard.writeText(value);
+          setFilesStatus(`Copied ${value}`);
+          return;
+        }
+        window.prompt("Copy path", value);
       }
 
       async function loadWorkspaces() {
@@ -1843,8 +2186,8 @@
       document.getElementById("clearPanels").onclick = () => {
         clearPanels();
       };
-      fileEntriesEl.onchange = () => {
-        renderFileDetails(selectedFileEntry());
+      fileSearchEl.oninput = () => {
+        renderFileTable();
       };
       document.getElementById("filesReload").onclick = async () => {
         try {
@@ -1905,6 +2248,13 @@
       document.getElementById("attachFile").onclick = () => {
         try {
           attachSelectedEntryToChat();
+        } catch (err) {
+          setFilesStatus(String(err));
+        }
+      };
+      document.getElementById("copyFilePath").onclick = async () => {
+        try {
+          await copySelectedFilePath();
         } catch (err) {
           setFilesStatus(String(err));
         }
