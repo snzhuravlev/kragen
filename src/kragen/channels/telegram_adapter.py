@@ -28,7 +28,6 @@ from kragen.channels.telegram_api import (
     tg_get_updates as _tg_get_updates,
     tg_send_processing_stub as _tg_send_processing_stub,
     tg_send_text as _tg_send_text,
-    tg_set_commands as _tg_set_commands,
     tg_set_webhook as _tg_set_webhook,
 )
 from kragen.channels.telegram_settings import TelegramChannelSettings, read_settings
@@ -44,6 +43,7 @@ from kragen.config import get_settings as get_kragen_settings
 from kragen.db.session import async_session_factory
 from kragen.logging_config import configure_logging, get_logger
 from kragen.models.core import Message, Session, Task
+from kragen.models.storage import StorageEntry
 from kragen.services import file_storage
 from kragen.services.telegram_bindings import (
     claim_message_processing,
@@ -55,52 +55,81 @@ from kragen.services.telegram_bindings import (
     resolve_or_create_binding,
     start_new_chat_session,
 )
-
 logger = get_logger(__name__)
+
+_STORAGE_PATH_RE = re.compile(r"(?<!\S)(/[^\s]+)")
+
+
+def _telegram_command_body(text: str) -> str:
+    """Normalize optional @bot suffix on the first token; preserve rest of the message."""
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    parts = stripped.split(maxsplit=1)
+    head = parts[0]
+    if "@" in head:
+        head = head.split("@", 1)[0]
+    if len(parts) == 1:
+        return head.lower()
+    return f"{head.lower()} {parts[1]}"
+
+
+def _extract_storage_target_path(caption: str | None) -> str | None:
+    """Return first absolute path from a caption (e.g. /public) for Telegram uploads."""
+    if not caption or not caption.strip():
+        return None
+    match = _STORAGE_PATH_RE.search(caption)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    while raw and raw[-1] in ".,;:!?）)]\"'»":
+        raw = raw[:-1].strip()
+    if not raw.startswith("/"):
+        return None
+    return raw or None
+
+
+def _disambiguate_storage_filename(name: str, attempt: int) -> str:
+    if attempt <= 0:
+        return name
+    if "." in name and not name.endswith("."):
+        stem, dot, ext = name.rpartition(".")
+        if dot and ext and "/" not in ext and "\\" not in ext:
+            return f"{stem} ({attempt}).{ext}"
+    return f"{name} ({attempt})"
+
+
+def _normalized_folder_path_from_mkdir_arg(arg: str) -> str | None:
+    """Turn mkdir argument into an absolute storage path (e.g. library/python -> /library/python)."""
+    raw = arg.strip().replace("\\", "/")
+    if raw.startswith("/"):
+        raw = raw[1:]
+    segments = [p for p in raw.split("/") if p]
+    if not segments:
+        return None
+    return "/" + "/".join(segments)
+
+
+def _mkdir_alias_command_line(text: str) -> str | None:
+    """Map `mkdir ...` (no leading slash) to `/mkdir ...` for the same handler as the bot command."""
+    match = re.match(r"^\s*mkdir(?:\s+(?P<rest>.+))?\s*$", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    rest = match.group("rest")
+    return f"/mkdir {rest.strip()}" if rest else "/mkdir"
+
+
+def _parse_command_arg(raw_text: str) -> str | None:
+    """Extract optional argument from a slash command text."""
+    parts = raw_text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        return None
+    value = parts[1].strip()
+    return value or None
+
 
 _STREAM_EDIT_INTERVAL_SECONDS = 1.0
 _S3_PATH_STYLE_CONFIG = Config(s3={"addressing_style": "path"})
-_COMMAND_SECTIONS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
-    (
-        "Chat and sessions",
-        (
-            ("/start", "connect this chat to Kragen"),
-            ("/new", "start a new session"),
-            ("/whoami", "show chat, session, workspace and user binding"),
-            ("/sessions", "list recent sessions"),
-            ("/tasks", "list recent tasks for the current session"),
-        ),
-    ),
-    (
-        "Storage",
-        (
-            ("/files", "list root files and folders"),
-            ("/ls", "alias for /files"),
-            ("/mkdir <name>", "create a root folder"),
-            ("send document", "upload a Telegram document into /Inbox/Telegram"),
-        ),
-    ),
-    (
-        "Help",
-        (
-            ("/help", "show this help"),
-            ("/commands", "show all commands with descriptions"),
-        ),
-    ),
-)
-_BOT_COMMANDS: tuple[tuple[str, str], ...] = (
-    ("start", "Connect this chat to Kragen"),
-    ("new", "Start a new session"),
-    ("whoami", "Show chat/session binding"),
-    ("sessions", "List recent sessions"),
-    ("tasks", "List recent tasks"),
-    ("files", "List root files and folders"),
-    ("ls", "Alias for /files"),
-    ("mkdir", "Create a root folder"),
-    ("help", "Show help"),
-    ("commands", "Show all commands"),
-)
-_STORAGE_PATH_RE = re.compile(r"(?<!\S)(/[^\s`]+)")
 
 
 def _read_settings() -> TelegramChannelSettings:
@@ -334,6 +363,162 @@ async def _handle_command_whoami(
     )
 
 
+async def _handle_command_files(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    raw_text: str,
+) -> str:
+    """List storage entries for root or for the requested folder path."""
+    path_arg = _parse_command_arg(raw_text)
+    target_path = "/" if path_arg is None else (_normalized_folder_path_from_mkdir_arg(path_arg) or "")
+    if not target_path:
+        return "Usage: `/ls [path]` or `/files [path]`. Examples: `/ls`, `/ls library`, `/ls /library/python`."
+    async with async_session_factory() as db:
+        binding = await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        parent_id = None
+        if target_path != "/":
+            current_parent: uuid.UUID | None = None
+            for segment in target_path.strip("/").split("/"):
+                result = await db.execute(
+                    select(StorageEntry).where(
+                        StorageEntry.workspace_id == binding.workspace_id,
+                        StorageEntry.parent_id == current_parent,
+                        StorageEntry.name == segment,
+                        StorageEntry.deleted_at.is_(None),
+                    )
+                )
+                node = result.scalar_one_or_none()
+                if node is None:
+                    await db.commit()
+                    return f"Path not found: `{_escape_md(target_path)}`"
+                if node.kind != "folder":
+                    await db.commit()
+                    return f"Not a folder: `{_escape_md(node.path_cache)}`"
+                current_parent = node.id
+            parent_id = current_parent
+        entries = await file_storage.list_entries(
+            db,
+            workspace_id=binding.workspace_id,
+            parent_id=parent_id,
+        )
+        await db.commit()
+    if not entries:
+        return f"*Files* ({_escape_md(target_path)})\n- `(empty)`"
+    lines: list[str] = [f"*Files* ({_escape_md(target_path)})"]
+    for item in entries:
+        kind = "folder" if item.kind == "folder" else "file"
+        lines.append(f"- `{item.id}` {_escape_md(item.name)} ({kind})")
+    return "\n".join(lines)
+
+
+async def _handle_command_mkdir(
+    *,
+    settings: TelegramChannelSettings,
+    chat_id: int,
+    username: str | None,
+    first_name: str | None,
+    last_name: str | None,
+    raw_text: str,
+) -> str:
+    """Create folder path from workspace root (nested segments supported)."""
+    parts = raw_text.strip().split(maxsplit=1)
+    head = parts[0]
+    if "@" in head:
+        head = head.split("@", 1)[0]
+    if head.lower() != "/mkdir" or len(parts) < 2 or not parts[1].strip():
+        return (
+            "Usage: `/mkdir <path>` — folder path from root.\n"
+            "Examples: `/mkdir temp`, `/mkdir library/python`, `/mkdir /public/docs`.\n"
+            "You can also write `mkdir library/python` (without a leading slash)."
+        )
+    arg = parts[1].strip()
+    path_abs = _normalized_folder_path_from_mkdir_arg(arg)
+    if path_abs is None:
+        return (
+            "Usage: `/mkdir <path>` — folder path from root.\n"
+            "Examples: `/mkdir temp`, `/mkdir library/python`."
+        )
+    async with async_session_factory() as db:
+        binding = await resolve_or_create_binding(
+            db,
+            chat_id=chat_id,
+            workspace_id=settings.default_workspace_id,
+            user_id=settings.auth_user_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        try:
+            folder = await file_storage.ensure_folder_path(
+                db,
+                workspace_id=binding.workspace_id,
+                path=path_abs,
+                created_by_user_id=settings.auth_user_id,
+                source_type="telegram",
+            )
+        except file_storage.InvalidStorageName as exc:
+            await db.rollback()
+            return f"Invalid path: `{exc}`"
+        except file_storage.StorageEntryConflict as exc:
+            await db.rollback()
+            return f"Cannot create path: {_escape_md(str(exc))}"
+        await db.commit()
+    if folder is None:
+        return "Invalid path."
+    return (
+        f"Ready `{_escape_md(folder.path_cache)}` (`{folder.id}`).\n"
+        "Missing folders along the path were created if needed."
+    )
+
+
+def _help_text() -> str:
+    """Return short command cheat sheet in Telegram Markdown."""
+    return (
+        "*Available commands*\n\n"
+        "*Chat*\n"
+        "- `/start` — connect\n"
+        "- `/new` — new session\n"
+        "- `/whoami` — binding info\n"
+        "- `/sessions` — sessions\n"
+        "- `/tasks` — tasks\n\n"
+        "*Storage*\n"
+        "- `/files` or `/ls` — list root (or pass path: `/ls library/python`)\n"
+        "- `/mkdir <path>` — new folder or nested path (`library/python` or `/public/docs`); "
+        "also `mkdir …` without slash\n"
+        "- Send a *document* with optional caption; put `/path` in the caption to choose folder "
+        "(default `/Inbox/Telegram`)\n\n"
+        "*Other*\n"
+        "- `/storage` — object storage health\n"
+        "- `/commands` — full list\n"
+        "- `/help` — this message"
+    )
+
+
+def _commands_text() -> str:
+    """Longer command reference for /commands."""
+    return _help_text()
+
+
+def _escape_md(value: str) -> str:
+    """Escape Telegram Markdown special chars in plain text fragments."""
+    escaped = value.replace("\\", "\\\\")
+    for ch in ("`", "*", "_", "[", "]"):
+        escaped = escaped.replace(ch, f"\\{ch}")
+    return escaped
+
+
 async def _handle_command_sessions(
     *,
     settings: TelegramChannelSettings,
@@ -424,115 +609,6 @@ async def _handle_command_tasks(
     return "\n".join(lines)
 
 
-async def _handle_command_files(
-    *,
-    settings: TelegramChannelSettings,
-    chat_id: int,
-    username: str | None,
-    first_name: str | None,
-    last_name: str | None,
-) -> str:
-    """Return root file tree entries for the bound workspace."""
-    async with async_session_factory() as db:
-        await resolve_or_create_binding(
-            db,
-            chat_id=chat_id,
-            workspace_id=settings.default_workspace_id,
-            user_id=settings.auth_user_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-        )
-        entries = await file_storage.list_entries(
-            db,
-            workspace_id=settings.default_workspace_id,
-            parent_id=None,
-        )
-        await db.commit()
-    if not entries:
-        return "*Files*\n- `(empty)`"
-    lines = ["*Files*"]
-    for entry in entries[:30]:
-        marker = "folder" if entry.kind == "folder" else "file"
-        size = f", {entry.size_bytes} bytes" if entry.size_bytes is not None else ""
-        lines.append(
-            f"- `{entry.id}` {_escape_md(entry.name)} "
-            f"({_escape_md(marker)}{_escape_md(size)})"
-        )
-    return "\n".join(lines)
-
-
-async def _handle_command_mkdir(
-    *,
-    settings: TelegramChannelSettings,
-    chat_id: int,
-    name: str,
-    username: str | None,
-    first_name: str | None,
-    last_name: str | None,
-) -> str:
-    """Create a root folder from Telegram."""
-    async with async_session_factory() as db:
-        await resolve_or_create_binding(
-            db,
-            chat_id=chat_id,
-            workspace_id=settings.default_workspace_id,
-            user_id=settings.auth_user_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-        )
-        entry = await file_storage.create_folder(
-            db,
-            workspace_id=settings.default_workspace_id,
-            parent_id=None,
-            name=name,
-            created_by_user_id=settings.auth_user_id,
-            source_type="telegram",
-            metadata={"telegram_chat_id": chat_id},
-        )
-        await db.commit()
-    return f"Папка создана: `{_escape_md(entry.path_cache)}`"
-
-
-def _help_text() -> str:
-    """Return all supported commands grouped by area."""
-    lines = ["*Available commands*"]
-    for section, commands in _COMMAND_SECTIONS:
-        lines.append("")
-        lines.append(f"*{_escape_md(section)}*")
-        for command, description in commands:
-            lines.append(f"- `{_escape_md(command)}` — {_escape_md(description)}")
-    return "\n".join(lines)
-
-
-def _bot_commands_payload() -> list[dict[str, str]]:
-    """Return Telegram Bot API command descriptors."""
-    return [
-        {"command": command, "description": description}
-        for command, description in _BOT_COMMANDS
-    ]
-
-
-def _escape_md(value: str) -> str:
-    """Escape Telegram Markdown special chars in plain text fragments."""
-    escaped = value.replace("\\", "\\\\")
-    for ch in ("`", "*", "_", "[", "]"):
-        escaped = escaped.replace(ch, f"\\{ch}")
-    return escaped
-
-
-def _extract_storage_target_path(text: str | None) -> str:
-    """Extract an absolute storage folder path from a document caption."""
-    if not text:
-        return "/Inbox/Telegram"
-    match = _STORAGE_PATH_RE.search(text)
-    if match is None:
-        return "/Inbox/Telegram"
-    path = match.group(1).rstrip(".,;:!?)\"]'}")
-    return path or "/Inbox/Telegram"
-
-
 async def _handle_user_text(
     tg_client: httpx.AsyncClient,
     kragen_client: httpx.AsyncClient,
@@ -575,6 +651,43 @@ async def _handle_user_text(
             metadata=metadata,
         )
         await _tg_send_text(tg_client, settings=settings, chat_id=chat_id, text=reply)
+        async with async_session_factory() as db:
+            binding_after = await get_binding_by_chat_id(db, chat_id=chat_id)
+            if binding_after is not None:
+                accepted = await mark_update_processed(
+                    db,
+                    binding=binding_after,
+                    incoming_update_id=update_id,
+                )
+                if accepted:
+                    await db.commit()
+                else:
+                    await db.rollback()
+        return
+
+    mkdir_alias = _mkdir_alias_command_line(text)
+    if mkdir_alias is not None:
+        reply = await _handle_command_mkdir(
+            settings=settings,
+            chat_id=chat_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            raw_text=mkdir_alias,
+        )
+        await _persist_direct_telegram_exchange(
+            session_id=binding.session_id,
+            user_text=text,
+            assistant_text=reply,
+            metadata={**metadata, "source": "telegram_mkdir_alias"},
+        )
+        await _tg_send_text(
+            tg_client,
+            settings=settings,
+            chat_id=chat_id,
+            text=reply,
+            parse_mode="Markdown",
+        )
         async with async_session_factory() as db:
             binding_after = await get_binding_by_chat_id(db, chat_id=chat_id)
             if binding_after is not None:
@@ -705,18 +818,6 @@ async def _handle_user_document(
     unique_id_value = document.get("file_unique_id")
     file_unique_id = str(unique_id_value) if isinstance(unique_id_value, str) else file_id
 
-    async with async_session_factory() as db:
-        binding = await resolve_or_create_binding(
-            db,
-            chat_id=chat_id,
-            workspace_id=settings.default_workspace_id,
-            user_id=settings.auth_user_id,
-            username=username,
-            first_name=first_name,
-            last_name=last_name,
-        )
-        await db.commit()
-
     get_file_payload = await _tg_call(
         tg_client,
         settings=settings,
@@ -737,70 +838,65 @@ async def _handle_user_document(
         raise RuntimeError("Downloaded Telegram document is empty")
 
     safe_name = _safe_filename(file_name)
-    target_path = _extract_storage_target_path(text)
+    dest_path = _extract_storage_target_path(text) or "/Inbox/Telegram"
+    user_text = text or f"[document] {file_name}"
+
     async with async_session_factory() as db:
-        target_folder = await file_storage.ensure_folder_path(
+        binding_row = await get_binding_by_chat_id(db, chat_id=chat_id)
+        if binding_row is None:
+            binding_row = await resolve_or_create_binding(
+                db,
+                chat_id=chat_id,
+                workspace_id=settings.default_workspace_id,
+                user_id=settings.auth_user_id,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+            )
+        folder = await file_storage.ensure_folder_path(
             db,
-            workspace_id=binding.workspace_id,
-            path=target_path,
-            created_by_user_id=binding.user_id,
+            workspace_id=binding_row.workspace_id,
+            path=dest_path,
+            created_by_user_id=settings.auth_user_id,
             source_type="telegram",
         )
-        try:
-            storage_entry, document_row = await file_storage.create_file_from_bytes(
-                db,
-                workspace_id=binding.workspace_id,
-                parent_id=target_folder.id if target_folder is not None else None,
-                name=safe_name,
-                body=file_bytes,
-                mime_type=mime_type,
-                created_by_user_id=binding.user_id,
-                source_type="telegram",
-                metadata={
-                    "telegram_chat_id": chat_id,
-                    "telegram_message_id": message_id,
-                    "telegram_update_id": update_id,
-                    "telegram_username": username,
-                    "telegram_document_file_id": file_id,
-                    "telegram_document_file_unique_id": file_unique_id,
-                    "telegram_document_file_name": file_name,
-                    "telegram_storage_target_path": target_path,
-                },
-                create_document=True,
-            )
-        except file_storage.StorageEntryConflict:
-            stem, ext = os.path.splitext(safe_name)
-            retry_name = f"{stem}-{file_unique_id[:12]}{ext}"
-            storage_entry, document_row = await file_storage.create_file_from_bytes(
-                db,
-                workspace_id=binding.workspace_id,
-                parent_id=target_folder.id if target_folder is not None else None,
-                name=retry_name,
-                body=file_bytes,
-                mime_type=mime_type,
-                created_by_user_id=binding.user_id,
-                source_type="telegram",
-                metadata={
-                    "telegram_chat_id": chat_id,
-                    "telegram_message_id": message_id,
-                    "telegram_update_id": update_id,
-                    "telegram_username": username,
-                    "telegram_document_file_id": file_id,
-                    "telegram_document_file_unique_id": file_unique_id,
-                    "telegram_document_file_name": file_name,
-                    "telegram_storage_target_path": target_path,
-                },
-                create_document=True,
-            )
+        parent_id = None if folder is None else folder.id
+
+        entry = None
+        for attempt in range(40):
+            candidate = _disambiguate_storage_filename(safe_name, attempt)
+            try:
+                entry, _document = await file_storage.create_file_from_bytes(
+                    db,
+                    workspace_id=binding_row.workspace_id,
+                    parent_id=parent_id,
+                    name=candidate,
+                    body=file_bytes,
+                    mime_type=mime_type,
+                    created_by_user_id=settings.auth_user_id,
+                    source_type="telegram",
+                    metadata={
+                        "telegram_chat_id": chat_id,
+                        "telegram_message_id": message_id,
+                        "telegram_document_file_id": file_id,
+                        "telegram_document_file_unique_id": file_unique_id,
+                        "telegram_document_file_name": file_name,
+                    },
+                    create_document=False,
+                )
+                break
+            except file_storage.StorageEntryConflict:
+                continue
+        if entry is None:
+            raise RuntimeError("Could not store file: unable to pick a unique name")
         await db.commit()
 
-    user_text = text or f"[document] {file_name}"
     assistant_text = (
         "Документ сохранён в файловое хранилище.\n"
-        f"File: {file_name}\n"
+        f"File: {entry.name}\n"
         f"Size: {len(file_bytes)} bytes\n"
-        f"Path: {storage_entry.path_cache}\n"
-        f"ID: {storage_entry.id}"
+        f"Path: `{entry.path_cache}`\n"
+        f"ID: `{entry.id}`"
     )
     metadata = {
         "channel": "telegram",
@@ -811,12 +907,11 @@ async def _handle_user_document(
         "telegram_document_file_id": file_id,
         "telegram_document_file_name": file_name,
         "telegram_document_mime_type": mime_type,
-        "storage_entry_id": str(storage_entry.id),
-        "document_id": str(document_row.id) if document_row is not None else None,
-        "telegram_document_uri": storage_entry.uri,
+        "telegram_document_uri": entry.uri,
+        "storage_entry_id": str(entry.id),
     }
     await _persist_direct_telegram_exchange(
-        session_id=binding.session_id,
+        session_id=binding_row.session_id,
         user_text=user_text,
         assistant_text=assistant_text,
         metadata=metadata,
@@ -883,8 +978,8 @@ async def _handle_update(
         first_name = str(first_name_value) if first_name_value is not None else None
         last_name = str(last_name_value) if last_name_value is not None else None
 
-    command_text = text.strip() if isinstance(text, str) else ""
-    command = command_text.lower()
+    command_line = _telegram_command_body(text) if isinstance(text, str) else ""
+    command = command_line.split(maxsplit=1)[0] if command_line else ""
     async with async_session_factory() as db:
         claimed = await claim_message_processing(
             db,
@@ -921,9 +1016,9 @@ async def _handle_update(
                 chat_id=chat_id,
                 text=(
                     "Connected to Kragen.\n"
-                    "Use /commands to see all commands.\n"
-                    "Send any text to run it via Kragen worker, or send a document "
-                    "to store it in /Inbox/Telegram."
+                    "Commands:\n"
+                    "/new - start a new session\n"
+                    "Send any text to run it via Kragen worker."
                 ),
             )
             async with async_session_factory() as db:
@@ -1052,6 +1147,32 @@ async def _handle_update(
                 )
                 await db.commit()
             return
+        if command == "/commands":
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=_commands_text(),
+                parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
         if command in {"/files", "/ls"}:
             message_text = await _handle_command_files(
                 settings=settings,
@@ -1059,6 +1180,7 @@ async def _handle_update(
                 username=username,
                 first_name=first_name,
                 last_name=last_name,
+                raw_text=text or command,
             )
             await _tg_send_text(
                 tg_client,
@@ -1085,54 +1207,77 @@ async def _handle_update(
                 )
                 await db.commit()
             return
-        if command == "/mkdir" or command.startswith("/mkdir "):
-            folder_name = command_text.removeprefix("/mkdir").strip()
-            if not folder_name:
-                message_text = "Usage: `/mkdir folder-name`"
-            else:
-                try:
-                    message_text = await _handle_command_mkdir(
-                        settings=settings,
+        if isinstance(text, str) and text.strip():
+            head = text.strip().split(maxsplit=1)[0]
+            if "@" in head:
+                head = head.split("@", 1)[0]
+            if head.lower() == "/mkdir":
+                message_text = await _handle_command_mkdir(
+                    settings=settings,
+                    chat_id=chat_id,
+                    username=username,
+                    first_name=first_name,
+                    last_name=last_name,
+                    raw_text=text,
+                )
+                await _tg_send_text(
+                    tg_client,
+                    settings=settings,
+                    chat_id=chat_id,
+                    text=message_text,
+                    parse_mode="Markdown",
+                )
+                async with async_session_factory() as db:
+                    maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                    if maybe_binding is not None:
+                        await mark_update_processed(
+                            db,
+                            binding=maybe_binding,
+                            incoming_update_id=update_id,
+                        )
+                        await db.commit()
+                async with async_session_factory() as db:
+                    await mark_message_status(
+                        db,
                         chat_id=chat_id,
-                        name=folder_name,
-                        username=username,
-                        first_name=first_name,
-                        last_name=last_name,
-                    )
-                except file_storage.FileStorageError as exc:
-                    message_text = f"Не удалось создать папку: {_escape_md(str(exc))}"
-            await _tg_send_text(
-                tg_client,
-                settings=settings,
-                chat_id=chat_id,
-                text=message_text,
-                parse_mode="Markdown",
-            )
-            async with async_session_factory() as db:
-                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
-                if maybe_binding is not None:
-                    await mark_update_processed(
-                        db,
-                        binding=maybe_binding,
-                        incoming_update_id=update_id,
+                        message_id=message_id,
+                        status="completed",
                     )
                     await db.commit()
-            async with async_session_factory() as db:
-                await mark_message_status(
-                    db,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    status="completed",
-                )
-                await db.commit()
-            return
-        if command in {"/help", "/commands"}:
+                return
+        if command == "/help":
             await _tg_send_text(
                 tg_client,
                 settings=settings,
                 chat_id=chat_id,
                 text=_help_text(),
                 parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command == "/storage":
+            reply = await _build_storage_check_reply()
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=reply,
             )
             async with async_session_factory() as db:
                 maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
@@ -1249,18 +1394,6 @@ async def _handle_update_with_timeout(
                     error="TimeoutError: telegram update timed out",
                 )
                 await db.commit()
-            try:
-                await _tg_send_text(
-                    tg_client,
-                    settings=settings,
-                    chat_id=chat_id,
-                    text=(
-                        "Запрос выполнялся слишком долго и был остановлен. "
-                        "Попробуйте повторить короче."
-                    ),
-                )
-            except Exception:
-                logger.debug("telegram_timeout_notification_failed", update_id=update_id)
     except Exception:  # noqa: BLE001
         logger.exception("telegram_update_wrapper_failed", update_id=update_id)
 
@@ -1280,11 +1413,6 @@ async def run_telegram_channel() -> None:
     pending_updates: set[asyncio.Task[None]] = set()
     try:
         async with httpx.AsyncClient() as tg_client, httpx.AsyncClient() as kragen_client:
-            await _tg_set_commands(
-                tg_client,
-                settings=settings,
-                commands=_bot_commands_payload(),
-            )
             while True:
                 try:
                     updates = await _tg_get_updates(
@@ -1392,11 +1520,6 @@ async def run_telegram_channel_webhook() -> None:
     @app.on_event("startup")
     async def _startup() -> None:
         async with httpx.AsyncClient() as tg_client:
-            await _tg_set_commands(
-                tg_client,
-                settings=settings,
-                commands=_bot_commands_payload(),
-            )
             await _tg_set_webhook(tg_client, settings=settings)
         app.state.worker_task = asyncio.create_task(_webhook_worker(queue=queue, settings=settings))
         app.state.cleanup_task = asyncio.create_task(_dedup_cleanup_worker(settings=settings))

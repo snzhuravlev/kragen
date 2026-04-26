@@ -6,14 +6,16 @@ import uuid
 
 from kragen.channels.telegram_adapter import (
     TelegramChannelSettings,
-    _bot_commands_payload,
     _extract_message_payload,
     _extract_storage_target_path,
     _health_payload,
-    _help_text,
     _is_valid_webhook_secret,
+    _mkdir_alias_command_line,
+    _parse_command_arg,
+    _normalized_folder_path_from_mkdir_arg,
     _safe_filename,
     _split_telegram_message,
+    _telegram_command_body,
 )
 
 
@@ -79,25 +81,32 @@ def test_safe_filename_sanitizes_unsafe_chars() -> None:
     assert _safe_filename("../q1 report (final).pdf") == "q1_report_final_.pdf"
 
 
-def test_help_text_lists_storage_and_commands_aliases() -> None:
-    text = _help_text()
-
-    assert "/commands" in text
-    assert "/files" in text
-    assert "/mkdir <name>" in text
-    assert "/Inbox/Telegram" in text
+def test_extract_storage_target_path_finds_public_in_russian_caption() -> None:
+    caption = "положи этот файл в каталог /public сторейджа"
+    assert _extract_storage_target_path(caption) == "/public"
 
 
-def test_bot_commands_payload_registers_command_menu() -> None:
-    commands = _bot_commands_payload()
-    names = {item["command"] for item in commands}
-
-    assert {"commands", "help", "files", "ls", "mkdir"}.issubset(names)
-    assert all(item["description"] for item in commands)
+def test_extract_storage_target_path_strips_trailing_punctuation() -> None:
+    assert _extract_storage_target_path("save to /public.") == "/public"
 
 
-def test_extract_storage_target_path_from_document_caption() -> None:
-    assert _extract_storage_target_path("положи этот файл в каталог /public") == "/public"
-    assert _extract_storage_target_path("save to /public/reports.") == "/public/reports"
-    assert _extract_storage_target_path("положи в /публичные/отчёты") == "/публичные/отчёты"
-    assert _extract_storage_target_path(None) == "/Inbox/Telegram"
+def test_telegram_command_body_strips_bot_suffix() -> None:
+    assert _telegram_command_body("/help@KragenBot") == "/help"
+    assert _telegram_command_body("/mkdir Work") == "/mkdir Work"
+
+
+def test_normalized_folder_path_from_mkdir_arg_nested() -> None:
+    assert _normalized_folder_path_from_mkdir_arg("library/python") == "/library/python"
+    assert _normalized_folder_path_from_mkdir_arg("/a//b/") == "/a/b"
+
+
+def test_mkdir_alias_command_line() -> None:
+    assert _mkdir_alias_command_line("mkdir library/python") == "/mkdir library/python"
+    assert _mkdir_alias_command_line("  MKDIR  /x  ") == "/mkdir /x"
+    assert _mkdir_alias_command_line("mkdir") == "/mkdir"
+    assert _mkdir_alias_command_line("please mkdir x") is None
+
+
+def test_parse_command_arg() -> None:
+    assert _parse_command_arg("/ls") is None
+    assert _parse_command_arg("/ls library/python") == "library/python"

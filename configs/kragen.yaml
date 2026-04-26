@@ -83,8 +83,8 @@ plugins:
       config: {}
 
 telegram_channel:
-  # Test profile for kragen-telegram-channel. Keep production secrets in env.
-  bot_token: "1234567890:TEST_BOT_TOKEN_REPLACE_ME"
+  # Keep the real Telegram bot token in env: KRAGEN_TELEGRAM_BOT_TOKEN.
+  bot_token: ""
   api_base_url: "http://127.0.0.1:8000"
   # Set to a JWT/OIDC token in production. Falls back to auth_user_id in dev.
   api_bearer_token: null

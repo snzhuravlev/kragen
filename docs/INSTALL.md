@@ -200,7 +200,7 @@ secret store.
 
 ```yaml
 telegram_channel:
-  bot_token: "1234567890:TEST_BOT_TOKEN_REPLACE_ME"
+  bot_token: ""
   api_base_url: "http://127.0.0.1:8000"
   auth_user_id: "00000000-0000-0000-0000-000000000001"
   default_workspace_id: "00000000-0000-0000-0000-000000000001"

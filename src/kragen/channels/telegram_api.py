@@ -132,21 +132,6 @@ async def tg_send_processing_stub(
     return None
 
 
-async def tg_set_commands(
-    client: httpx.AsyncClient,
-    *,
-    settings: TelegramChannelSettings,
-    commands: list[dict[str, str]],
-) -> None:
-    """Register slash commands shown by Telegram clients."""
-    await tg_call(
-        client,
-        settings=settings,
-        method="setMyCommands",
-        payload={"commands": commands},
-    )
-
-
 async def tg_set_webhook(
     client: httpx.AsyncClient,
     *,
@@ -164,10 +149,6 @@ async def tg_set_webhook(
         method="setWebhook",
         payload={
             "url": settings.webhook_public_url.rstrip("/") + normalized_path,
-            **(
-                {"secret_token": settings.webhook_secret_token}
-                if settings.webhook_secret_token
-                else {}
-            ),
+            **({"secret_token": settings.webhook_secret_token} if settings.webhook_secret_token else {}),
         },
     )

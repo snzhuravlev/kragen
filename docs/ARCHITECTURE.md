@@ -15,7 +15,7 @@ Clients (Web UI, agentctl, external integrations)
 └─────────┬─────────┘
           │
           ├── Session / Messages / Tasks API
-          ├── Files → object storage + documents table
+          ├── Files → logical file tree + object storage + optional documents
           │
           ▼
 ┌───────────────────┐
@@ -39,7 +39,7 @@ Clients (Web UI, agentctl, external integrations)
 | Database      | `src/kragen/db/session.py`, `alembic/`        | async SQLAlchemy, migrations                    |
 | Models        | `src/kragen/models/`                          | ORM entities                                    |
 | Orchestration | `src/kragen/services/orchestrator.py`         | Cursor Agent subprocess, SSE stream, optional memory context |
-| File storage  | `src/kragen/storage/object_store.py`          | S3 API (aioboto3)                               |
+| File storage  | `src/kragen/services/file_storage.py`, `src/kragen/storage/object_store.py` | Logical file tree + S3 API (aioboto3). See [docs/STORAGE.md](STORAGE.md). |
 | CLI           | `src/kragen/cli/agentctl.py`                  | HTTP client to the API                          |
 
 
@@ -64,8 +64,8 @@ The `mcp_servers/` directory holds separate stdio processes (memory, workspace, 
 
 ## Data
 
-- **PostgreSQL**: users, workspaces, sessions, messages, tasks, artifacts, audit, documents/chunks/embeddings (schema from Alembic).
-- **Object storage**: uploaded blobs; metadata and `content_hash` in the database.
+- **PostgreSQL**: users, workspaces, sessions, messages, tasks, artifacts, audit, logical file entries (`storage_entries`), documents/chunks/embeddings (schema from Alembic).
+- **Object storage**: uploaded blobs; logical file tree metadata and `content_hash` live in PostgreSQL.
 
 ## Current MVP limitations
 

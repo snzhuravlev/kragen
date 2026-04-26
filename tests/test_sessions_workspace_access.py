@@ -56,6 +56,13 @@ class _Db:
 
     async def flush(self) -> None:
         self.flush_calls += 1
+        for row in self.added:
+            if getattr(row, "id", None) is None:
+                row.id = uuid.uuid4()
+            if getattr(row, "created_at", None) is None:
+                row.created_at = datetime.now(UTC)
+            if getattr(row, "updated_at", None) is None:
+                row.updated_at = datetime.now(UTC)
 
     async def commit(self) -> None:
         self.commit_calls += 1
