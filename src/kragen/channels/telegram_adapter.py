@@ -499,6 +499,13 @@ def _help_text() -> str:
         "also `mkdir …` without slash\n"
         "- Send a *document* with optional caption; put `/path` in the caption to choose folder "
         "(default `/Inbox/Telegram`)\n\n"
+        "*Agent tools \\(via regular task messages, not Telegram slash handlers\\)*\n"
+        "- `/run_command` — use MCP `kragen-scripts.run_command` in agent workflow\n"
+        "- `/run_bash` — use MCP `kragen-scripts.run_bash` in agent workflow\n"
+        "- `/run_python` — use MCP `kragen-scripts.run_python` in agent workflow\n"
+        "- `/import_url` — use MCP `kragen-files.import_url` in agent workflow\n"
+        "- `/ensure_folder_path` — use MCP `kragen-files.ensure_folder_path`\n"
+        "- `/upload_from_workspace` — use MCP `kragen-files.upload_from_workspace`\n\n"
         "*Other*\n"
         "- `/storage` — object storage health\n"
         "- `/commands` — full list\n"
@@ -587,7 +594,7 @@ async def _handle_command_tasks(
             select(Task.id, Task.status, Task.error, Task.created_at, Task.updated_at)
             .where(Task.session_id == binding.session_id)
             .order_by(Task.created_at.desc())
-            .limit(50)
+            .limit(5)
         )
         await db.commit()
     rows = result.fetchall()

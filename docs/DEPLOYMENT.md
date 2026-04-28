@@ -95,6 +95,10 @@ For the current MVP, **one** worker is recommended because task SSE is in-memory
 - Optional **`file_import.allowed_mime_prefixes`** (for example `application/pdf`, `application/`) restricts response `Content-Type`; when set, responses without a type are rejected.
 - **`POST /files/folders/ensure`** creates a full logical path (like **`/mkdir`** / `ensure_folder_path`). Task tokens with scope **`files:task`** may call import, folder create, ensure, and upload; **`files:import`**-only tokens may call **`POST /files/import`** only.
 - **Task-scoped tokens** (`worker.task_token_enabled`): the worker mints a short JWT for the task user, passes **`KRAGEN_TASK_TOKEN`**, **`KRAGEN_API_URL`**, and **`KRAGEN_WORKSPACE_ID`** into the subprocess and into the `kragen-files` MCP `env` so tools can call the import API without manual secrets.
+- **`kragen-scripts` MCP** runs shell/python in `KRAGEN_TASK_WORKSPACE_DIR`. `run_command` is off by default and requires **`KRAGEN_SCRIPTS_ENABLE_RUN_COMMAND=true`**; tighten policy with **`KRAGEN_SCRIPTS_ALLOWED_PREFIXES`** and **`KRAGEN_SCRIPTS_DENY_SUBSTRINGS`** (comma-separated).
+- **`kragen-os` MCP** runs OS commands in `KRAGEN_TASK_WORKSPACE_DIR` with structured JSON results (`ok`, `exit_code`, `stdout`, `stderr`, `duration_ms`, `timed_out`, `truncated`).
+- Configure `kragen-os` policy via MCP env (usually generated from plugin config): **`KRAGEN_OS_SECURITY_PROFILE`** (`open_dev`/`balanced`/`strict`), **`KRAGEN_OS_MAX_TIMEOUT_SECONDS`**, **`KRAGEN_OS_MAX_OUTPUT_BYTES`**, **`KRAGEN_OS_ALLOWED_COMMAND_PREFIXES`**, **`KRAGEN_OS_ALLOWED_ENV_PREFIXES`**.
+- In production, avoid `open_dev`; prefer `balanced` or `strict` and set explicit command/env allow-lists.
 
 ## Secrets and security
 

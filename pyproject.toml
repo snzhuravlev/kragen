@@ -53,6 +53,8 @@ kragen-worker = "kragen.worker:main"
 kragen-skill-concise = "kragen.plugins.builtin.concise_skill:plugin"
 kragen-skill-kragen-storage = "kragen.plugins.builtin.kragen_storage_skill:plugin"
 kragen-mcp-kragen-files = "kragen.plugins.builtin.kragen_files_mcp_plugin:plugin"
+kragen-mcp-scripts = "kragen.plugins.builtin.kragen_scripts_mcp_plugin:plugin"
+kragen-mcp-os = "kragen.plugins.builtin.kragen_os_mcp_plugin:plugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

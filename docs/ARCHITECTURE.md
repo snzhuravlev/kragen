@@ -62,6 +62,15 @@ The `mcp_servers/` directory holds separate stdio processes (memory, workspace, 
 - `pin_memory`
 - `forget_memory`
 
+Built-in worker-side MCP plugins can also expose task-local tools through generated
+`.cursor/mcp.json`, for example:
+
+- `kragen-files` — logical storage import/upload helpers (API-backed).
+- `kragen-scripts` — run `bash` / `python` scripts inside `KRAGEN_TASK_WORKSPACE_DIR`;
+  includes `run_command` with policy gates (disabled by default, allow/deny env controls).
+- `kragen-os` — run OS commands via `run_process`/`run_shell` in `KRAGEN_TASK_WORKSPACE_DIR`
+  with profile-based policy (`open_dev`, `balanced`, `strict`), timeout and output caps.
+
 ## Data
 
 - **PostgreSQL**: users, workspaces, sessions, messages, tasks, artifacts, audit, logical file entries (`storage_entries`), documents/chunks/embeddings (schema from Alembic).

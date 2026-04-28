@@ -95,6 +95,22 @@ plugins:
     # Cursor worker MCP: import_url -> POST /files/import (env injected per task).
     - id: kragen-mcp-kragen-files
       config: {}
+    # Cursor worker MCP: run bash/python scripts in KRAGEN_TASK_WORKSPACE_DIR.
+    - id: kragen-mcp-scripts
+      config: {}
+    # Cursor worker MCP: run OS commands in KRAGEN_TASK_WORKSPACE_DIR.
+    - id: kragen-mcp-os
+      config:
+        security_profile: open_dev
+        max_timeout_seconds: 300
+        max_output_bytes: 20000
+        allowed_env_prefixes:
+          - KRAGEN_
+          - PYTHON
+          - PATH
+          - HOME
+          - LANG
+          - LC_
 
 telegram_channel:
   # Keep the real Telegram bot token in env: KRAGEN_TELEGRAM_BOT_TOKEN.
