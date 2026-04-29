@@ -314,6 +314,74 @@ async def _kragen_last_assistant_message(
     return ""
 
 
+async def _handle_command_plugins(
+    client: httpx.AsyncClient,
+    *,
+    settings: TelegramChannelSettings,
+    raw_text: str,
+) -> str:
+    """List plugins or toggle one plugin via admin API."""
+    usage = (
+        "*Plugins command*\n"
+        "- `/plugins` — list plugins\n"
+        "- `/plugins enable <plugin_id>` — enable plugin\n"
+        "- `/plugins disable <plugin_id>` — disable plugin\n"
+        "- `/plugins help` — show this help"
+    )
+    normalized = _telegram_command_body(raw_text)
+    parts = normalized.split()
+    if not parts or parts[0] != "/plugins":
+        return usage
+    if len(parts) == 2 and parts[1] == "help":
+        return usage
+
+    if len(parts) == 1:
+        response = await client.get(
+            f"{settings.kragen_api_base_url}/admin/plugins",
+            headers=_headers(settings),
+            timeout=20.0,
+        )
+        if response.status_code == 403:
+            return "Access denied: admin rights are required for `/plugins`."
+        response.raise_for_status()
+        payload = response.json()
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list) or not items:
+            return "*Plugins*\n- `(empty)`"
+        lines = ["*Plugins*"]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            plugin_id = _escape_md(str(item.get("id", "unknown")))
+            kind = _escape_md(str(item.get("kind", "n/a")))
+            enabled = bool(item.get("enabled", False))
+            mark = "enabled" if enabled else "disabled"
+            lines.append(f"- `{plugin_id}` — {mark} \\({kind}\\)")
+        lines.append("")
+        lines.append("Toggle: `/plugins enable <plugin_id>` or `/plugins disable <plugin_id>`")
+        return "\n".join(lines)
+
+    if len(parts) == 3 and parts[1] in {"enable", "disable"}:
+        action = parts[1]
+        plugin_id = parts[2]
+        response = await client.post(
+            f"{settings.kragen_api_base_url}/admin/plugins/{plugin_id}/{action}",
+            headers=_headers(settings),
+            timeout=20.0,
+        )
+        if response.status_code == 403:
+            return f"Access denied: admin rights are required to `{action}` plugins."
+        if response.status_code == 404:
+            return f"Plugin not found: `{_escape_md(plugin_id)}`"
+        response.raise_for_status()
+        payload = response.json()
+        enabled = bool(payload.get("enabled", False)) if isinstance(payload, dict) else False
+        state = "enabled" if enabled else "disabled"
+        return f"Plugin `{_escape_md(plugin_id)}` is now *{state}*."
+
+    return usage
+
+
 async def _handle_command_new(
     *,
     settings: TelegramChannelSettings,
@@ -503,11 +571,14 @@ def _help_text() -> str:
         "- `/run_command` — use MCP `kragen-scripts.run_command` in agent workflow\n"
         "- `/run_bash` — use MCP `kragen-scripts.run_bash` in agent workflow\n"
         "- `/run_python` — use MCP `kragen-scripts.run_python` in agent workflow\n"
+        "- `/run_process` — use MCP `kragen-os.run_process` to execute OS command\n"
+        "- `/run_shell` — use MCP `kragen-os.run_shell` for bash/sh/powershell script\n"
         "- `/import_url` — use MCP `kragen-files.import_url` in agent workflow\n"
         "- `/ensure_folder_path` — use MCP `kragen-files.ensure_folder_path`\n"
         "- `/upload_from_workspace` — use MCP `kragen-files.upload_from_workspace`\n\n"
         "*Other*\n"
         "- `/storage` — object storage health\n"
+        "- `/plugins` — list plugins, enable/disable plugin\n"
         "- `/commands` — full list\n"
         "- `/help` — this message"
     )
@@ -1160,6 +1231,37 @@ async def _handle_update(
                 settings=settings,
                 chat_id=chat_id,
                 text=_commands_text(),
+                parse_mode="Markdown",
+            )
+            async with async_session_factory() as db:
+                maybe_binding = await get_binding_by_chat_id(db, chat_id=chat_id)
+                if maybe_binding is not None:
+                    await mark_update_processed(
+                        db,
+                        binding=maybe_binding,
+                        incoming_update_id=update_id,
+                    )
+                    await db.commit()
+            async with async_session_factory() as db:
+                await mark_message_status(
+                    db,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    status="completed",
+                )
+                await db.commit()
+            return
+        if command == "/plugins":
+            message_text = await _handle_command_plugins(
+                kragen_client,
+                settings=settings,
+                raw_text=text or command,
+            )
+            await _tg_send_text(
+                tg_client,
+                settings=settings,
+                chat_id=chat_id,
+                text=message_text,
                 parse_mode="Markdown",
             )
             async with async_session_factory() as db:
