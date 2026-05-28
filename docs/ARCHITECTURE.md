@@ -7,26 +7,36 @@ Kragen is a **backend platform**: HTTP request handling, sessions and tasks, Pos
 ## Logical layers
 
 ```
-Clients (Web UI, agentctl, external integrations)
+Clients (Web UI, agentctl, Telegram, external integrations)
         │
         ▼
 ┌───────────────────┐
-│  FastAPI (gateway) │  routes, CORS, correlation id, DB dependencies
+│  FastAPI (gateway) │  routes, CORS, correlation id, JWT/UUID auth, plugins
 └─────────┬─────────┘
           │
-          ├── Session / Messages / Tasks API
-          ├── Files → logical file tree + object storage + optional documents
+          ├── Session / Messages / Tasks / Files API
           │
           ▼
 ┌───────────────────┐
-│    Orchestrator    │  enqueue task, Cursor worker (`orchestrator.py`)
+│    Orchestrator    │  schedule_task → inline asyncio or Redis queue
 │  services/         │
 └─────────┬─────────┘
           │
-          ├── task_stream (in-process SSE buffer)
+          ├── kragen-worker (optional Redis consumer, same plugin bootstrap)
+          ├── task_stream (memory or Redis Streams → SSE)
           ├── audit_service
-          └── SQLAlchemy → PostgreSQL
+          └── SQLAlchemy → PostgreSQL + S3 object storage
 ```
+
+### Multi-process deployment
+
+| Mode | `task_queue` | `task_stream` | Processes |
+| ---- | ------------ | ------------- | --------- |
+| Dev (default) | `inline` | `memory` | `kragen-api` only |
+| Scale-out | `redis` | `redis` | `kragen-api` + **`kragen-worker`** (+ Redis) |
+
+Both API and worker call `bootstrap_plugins()` so skills and MCP configs are
+materialized in whichever process runs `run_cursor_worker`.
 
 ## Main code components
 
@@ -39,6 +49,8 @@ Clients (Web UI, agentctl, external integrations)
 | Database      | `src/kragen/db/session.py`, `alembic/`        | async SQLAlchemy, migrations                    |
 | Models        | `src/kragen/models/`                          | ORM entities                                    |
 | Orchestration | `src/kragen/services/orchestrator.py`         | Cursor Agent subprocess, SSE stream, optional memory context |
+| Worker        | `src/kragen/worker.py`                        | Redis task consumer (when `task_queue.backend=redis`) |
+| Channels      | `src/kragen/channels/telegram/`               | Telegram adapter (`ChannelGateway`, polling, webhook) |
 | File storage  | `src/kragen/services/file_storage.py`, `src/kragen/storage/object_store.py` | Logical file tree + S3 API (aioboto3). See [docs/STORAGE.md](STORAGE.md). |
 | CLI           | `src/kragen/cli/agentctl.py`                  | HTTP client to the API                          |
 
@@ -70,6 +82,7 @@ Built-in worker-side MCP plugins can also expose task-local tools through genera
   includes `run_command` with policy gates (disabled by default, allow/deny env controls).
 - `kragen-os` — run OS commands via `run_process`/`run_shell` in `KRAGEN_TASK_WORKSPACE_DIR`
   with profile-based policy (`open_dev`, `balanced`, `strict`), timeout and output caps.
+- `kragen-web-search` — web search MCP for the Cursor worker.
 
 ## Data
 
@@ -78,8 +91,8 @@ Built-in worker-side MCP plugins can also expose task-local tools through genera
 
 ## Current MVP limitations
 
-- **Single API process**: task SSE is in-memory; multiple workers need a shared bus (e.g. Redis Streams).
-- **Horizontal scaling** of the API requires a shared task/stream backend; the current design assumes one process.
+- **Single-node defaults:** `task_stream.backend=memory` and `task_queue.backend=inline` suit one API process; production scale-out needs Redis **and** `kragen-worker` (see table above).
+- **In-memory stream:** chunk overflow drops old data; not suitable for multi-instance SSE without Redis.
 - **OpenClaw** integration is disabled by default (`channels.openclaw_enabled`); channel type `openclaw` is rejected by the API when disabled.
 
 ## Admin API (selected)

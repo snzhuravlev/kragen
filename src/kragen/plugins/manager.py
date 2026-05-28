@@ -159,9 +159,46 @@ class PluginManager:
                 enabled=sum(1 for r in self._records.values() if r.enabled),
             )
 
+    def _enabled_setup_order(self) -> tuple[list[str], list[str]]:
+        """Return topological setup order for enabled plugins and ids in cycles."""
+        enabled_ids = [pid for pid, record in self._records.items() if record.enabled]
+        in_degree = {pid: 0 for pid in enabled_ids}
+        edges: dict[str, list[str]] = {pid: [] for pid in enabled_ids}
+        for pid in enabled_ids:
+            record = self._records[pid]
+            for required in record.manifest.requires:
+                if required not in self._records or not self._records[required].enabled:
+                    continue
+                edges[required].append(pid)
+                in_degree[pid] += 1
+
+        queue = sorted(pid for pid in enabled_ids if in_degree[pid] == 0)
+        order: list[str] = []
+        while queue:
+            node = queue.pop(0)
+            order.append(node)
+            for dependent in edges[node]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+                    queue.sort()
+
+        if len(order) == len(enabled_ids):
+            return order, []
+        cyclic = sorted(pid for pid in enabled_ids if pid not in order)
+        return [], cyclic
+
     def _run_setup_for_enabled(self) -> None:
-        """Invoke ``setup()`` on every enabled plugin, collecting registered specs."""
-        for plugin_id, record in self._records.items():
+        """Invoke ``setup()`` on every enabled plugin in dependency order."""
+        order, cyclic = self._enabled_setup_order()
+        for plugin_id in cyclic:
+            record = self._records[plugin_id]
+            record.setup_error = "PluginConfigError: circular requires dependency"
+            record.enabled = False
+            logger.warning("plugin_requires_cycle", plugin_id=plugin_id, cyclic=cyclic)
+
+        for plugin_id in order:
+            record = self._records[plugin_id]
             if not record.enabled:
                 continue
             missing_requires = [
@@ -511,6 +548,18 @@ class PluginManager:
 
     @staticmethod
     def _serialize_record(record: _PluginRecord) -> dict[str, Any]:
+        runtime_notes: list[str] = []
+        router_mounted = bool(record.backends)
+        if record.backends:
+            runtime_notes.append(
+                "Backend HTTP routes are mounted at API startup and stay active until "
+                "the API process is restarted."
+            )
+        if record.backends and not record.enabled:
+            runtime_notes.append(
+                "Plugin is disabled but previously mounted backend routes may still "
+                "accept requests until restart."
+            )
         return {
             "id": record.manifest.id,
             "version": record.manifest.version,
@@ -525,6 +574,9 @@ class PluginManager:
             "distribution": record.dist_name,
             "config": dict(record.config),
             "setup_error": record.setup_error,
+            "runtime_notes": runtime_notes,
+            "router_mounted": router_mounted,
+            "requires_restart": router_mounted,
             "skills": [s.model_dump() for s in record.skills],
             "mcp_servers": [s.model_dump() for s in record.mcp_servers],
             "backends": [
@@ -544,6 +596,13 @@ def get_plugin_manager() -> PluginManager:
     if _manager is None:
         _manager = PluginManager()
     return _manager
+
+
+def bootstrap_plugins() -> PluginManager:
+    """Discover and activate plugins (shared by API and worker processes)."""
+    manager = get_plugin_manager()
+    manager.initialize()
+    return manager
 
 
 def reset_plugin_manager_for_tests() -> None:

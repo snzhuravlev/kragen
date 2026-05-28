@@ -111,6 +111,15 @@ plugins:
           - HOME
           - LANG
           - LC_
+    # Cursor worker MCP: search the web and fetch public pages.
+    - id: kragen-mcp-web-search
+      config:
+        timeout_seconds: 15
+        max_results: 5
+        max_content_chars: 12000
+        safe_search: moderate
+        allow_http: false
+        allowed_domains: []
 
 telegram_channel:
   # Keep the real Telegram bot token in env: KRAGEN_TELEGRAM_BOT_TOKEN.

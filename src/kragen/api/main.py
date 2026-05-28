@@ -28,7 +28,7 @@ from kragen.api.routes import (
 from kragen.config import get_settings
 from kragen.db.session import engine
 from kragen.logging_config import configure_logging, get_logger
-from kragen.plugins.manager import get_plugin_manager
+from kragen.plugins.manager import bootstrap_plugins, get_plugin_manager
 from kragen.services import task_stream
 from kragen.services.task_reaper import run_task_reaper
 from kragen.storage import object_store
@@ -109,11 +109,7 @@ def create_app() -> FastAPI:
     # Plugin bootstrap: discover + setup(), then mount backend-kind routers.
     # Initialization happens here (not in lifespan) so backend routers are
     # known before the FastAPI router tree is finalized.
-    plugin_manager = get_plugin_manager()
-    try:
-        plugin_manager.initialize()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("plugin_manager_init_failed", error=str(exc))
+    plugin_manager = bootstrap_plugins()
 
     for backend in plugin_manager.all_backends():
         app.include_router(

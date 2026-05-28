@@ -208,3 +208,72 @@ def test_duplicate_skill_id_across_plugins_disables_second_plugin() -> None:
     second = manager.get_plugin("kragen-second")
     assert second["enabled"] is False
     assert "already registered by plugin 'kragen-first'" in second["setup_error"]
+
+
+def test_requires_cycle_disables_plugins_in_cycle() -> None:
+    class _CycleA(BasePlugin):
+        def __init__(self) -> None:
+            super().__init__(
+                PluginManifest(
+                    id="kragen-cycle-a",
+                    version="0.0.1",
+                    kind="skill",
+                    requires=["kragen-cycle-b"],
+                )
+            )
+
+        def setup(self, ctx: PluginContext) -> None:
+            ctx.register_skill(SkillSpec(id="cycle-a", title="A", prompt="A"))
+
+    class _CycleB(BasePlugin):
+        def __init__(self) -> None:
+            super().__init__(
+                PluginManifest(
+                    id="kragen-cycle-b",
+                    version="0.0.1",
+                    kind="skill",
+                    requires=["kragen-cycle-a"],
+                )
+            )
+
+        def setup(self, ctx: PluginContext) -> None:
+            ctx.register_skill(SkillSpec(id="cycle-b", title="B", prompt="B"))
+
+    manager = PluginManager()
+    from kragen.plugins.manager import _PluginRecord
+
+    for plugin in (_CycleA(), _CycleB()):
+        manager._records[plugin.manifest.id] = _PluginRecord(
+            manifest=plugin.manifest,
+            instance=plugin,
+            config={},
+            enabled=True,
+            ep_name="test",
+            dist_name=None,
+        )
+
+    manager._run_setup_for_enabled()
+
+    assert manager.get_plugin("kragen-cycle-a")["enabled"] is False
+    assert manager.get_plugin("kragen-cycle-b")["enabled"] is False
+    assert "circular requires dependency" in manager.get_plugin("kragen-cycle-a")["setup_error"]
+
+
+def test_serialize_record_includes_backend_runtime_notes() -> None:
+    from fastapi import APIRouter
+
+    class _BackendPlugin(BasePlugin):
+        def __init__(self) -> None:
+            super().__init__(
+                PluginManifest(id="kragen-backend-test", version="0.0.1", kind="backend")
+            )
+
+        def setup(self, ctx: PluginContext) -> None:
+            ctx.include_router(APIRouter(), prefix="/plugins/test")
+
+    manager = _make_manager_with_plugin(_BackendPlugin())
+    record = manager.get_plugin("kragen-backend-test")
+
+    assert record["router_mounted"] is True
+    assert record["requires_restart"] is True
+    assert record["runtime_notes"]

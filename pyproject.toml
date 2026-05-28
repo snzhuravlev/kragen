@@ -55,6 +55,7 @@ kragen-skill-kragen-storage = "kragen.plugins.builtin.kragen_storage_skill:plugi
 kragen-mcp-kragen-files = "kragen.plugins.builtin.kragen_files_mcp_plugin:plugin"
 kragen-mcp-scripts = "kragen.plugins.builtin.kragen_scripts_mcp_plugin:plugin"
 kragen-mcp-os = "kragen.plugins.builtin.kragen_os_mcp_plugin:plugin"
+kragen-mcp-web-search = "kragen.plugins.builtin.kragen_web_search_mcp_plugin:plugin"
 
 [tool.setuptools.packages.find]
 where = ["src"]

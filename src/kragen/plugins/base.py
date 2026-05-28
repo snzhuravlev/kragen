@@ -8,7 +8,6 @@ orchestrator internals, FastAPI app) directly.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from fastapi import APIRouter
@@ -123,9 +122,6 @@ class ChannelSpec(BaseModel):
         default="",
         description="How an operator starts this channel (command, docker image, etc.).",
     )
-
-
-HookFn = Callable[["PluginContext"], Awaitable[None]]
 
 
 @runtime_checkable

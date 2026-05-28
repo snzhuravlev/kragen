@@ -25,8 +25,9 @@ async def _get_authorized_task(db: AsyncSession, task_id: uuid.UUID, user_id: uu
         raise HTTPException(status_code=404, detail="Task not found")
     sess_result = await db.execute(select(Session).where(Session.id == row.session_id))
     sess = sess_result.scalar_one_or_none()
-    if sess is not None:
-        await ensure_workspace_access(db, user_id=user_id, workspace_id=sess.workspace_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=sess.workspace_id)
     return row
 
 

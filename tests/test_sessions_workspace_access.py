@@ -137,6 +137,34 @@ async def test_list_messages_allows_workspace_member_session(
 
 
 @pytest.mark.asyncio
+async def test_create_session_checks_workspace_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    workspace_id = uuid.uuid4()
+    calls: list[tuple[uuid.UUID, uuid.UUID]] = []
+
+    async def fake_ensure(_db: object, *, user_id: uuid.UUID, workspace_id: uuid.UUID) -> None:
+        calls.append((user_id, workspace_id))
+
+    async def fake_write_audit(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(sessions, "ensure_workspace_access", fake_ensure)
+    monkeypatch.setattr(sessions, "write_audit", fake_write_audit)
+
+    from kragen.api.schemas import SessionCreate
+
+    db = _Db()
+    body = SessionCreate(workspace_id=workspace_id, title="test", channel_type="web")
+    returned = await sessions.create_session(body, db, user_id, "cid")
+
+    assert returned.workspace_id == workspace_id
+    assert calls == [(user_id, workspace_id)]
+    assert db.commit_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_post_message_allows_workspace_member_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

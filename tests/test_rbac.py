@@ -124,9 +124,42 @@ def test_prod_config_allows_localhost_bind_with_real_secret() -> None:
             "dev_user_id": None,
             "raw_uuid_bearer_enabled": False,
         },
+        file_import={"allowed_host_suffixes": ["example.com"]},
+        http={"cors_allow_origins": ["https://app.example.com"]},
     )
 
     assert settings.api.host == "127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"file_import": {"allowed_host_suffixes": []}},
+        {"http": {"cors_allow_origins": ["*"]}},
+        {
+            "telegram_channel": {
+                "mode": "webhook",
+                "webhook_secret_token": None,
+            }
+        },
+    ],
+)
+def test_prod_config_rejects_insecure_defaults(extra: dict[str, object]) -> None:
+    base: dict[str, object] = {
+        "app": {"environment": "prod"},
+        "api": {"host": "127.0.0.1"},
+        "database": {"url": "postgresql+asyncpg://kragen:secret@127.0.0.1:5432/kragen"},
+        "auth": {
+            "disabled": False,
+            "jwt_secret": "not-the-default-secret",
+            "raw_uuid_bearer_enabled": False,
+        },
+        "file_import": {"allowed_host_suffixes": ["example.com"]},
+        "http": {"cors_allow_origins": ["https://app.example.com"]},
+    }
+    base.update(extra)
+    with pytest.raises(ValidationError, match="Invalid production configuration"):
+        KragenSettings(**base)  # type: ignore[arg-type]
 
 
 def test_decode_jwt_user_id_uses_subject_uuid() -> None:

@@ -278,6 +278,20 @@ class KragenSettings(BaseSettings):
             errors.append("auth.oidc_jwks_url must be set for asymmetric JWT algorithms")
         if self.api.host in {"0.0.0.0", "::"}:
             errors.append("api.host must not bind to all interfaces behind a reverse proxy")
+        if not self.file_import.allowed_host_suffixes:
+            errors.append(
+                "file_import.allowed_host_suffixes must be non-empty in production "
+                "(deny-all SSRF protection for POST /files/import)"
+            )
+        if "*" in self.http.cors_allow_origins:
+            errors.append(
+                "http.cors_allow_origins must not include '*' in production "
+                "(use explicit origins when credentials are enabled)"
+            )
+        if self.telegram_channel.mode == "webhook" and not self.telegram_channel.webhook_secret_token:
+            errors.append(
+                "telegram_channel.webhook_secret_token must be set when mode=webhook"
+            )
 
         if errors:
             joined = "; ".join(errors)

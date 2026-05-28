@@ -42,6 +42,8 @@ async def create_session(
     correlation_id: CorrelationId,
 ) -> Session:
     """Open a new chat session in a workspace."""
+    await ensure_workspace_access(db, user_id=user_id, workspace_id=body.workspace_id)
+
     if body.channel_type == "openclaw" and not settings.channels.openclaw_enabled:
         raise HTTPException(
             status_code=403,
